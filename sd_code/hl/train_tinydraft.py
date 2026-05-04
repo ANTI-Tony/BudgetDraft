@@ -167,30 +167,26 @@ def get_teacher_sparse_topk_logits(teacher, input_ids, prefix_cache_tuples, pref
 
 def train_step(student, teacher, input_ids, prefix_len, cont_len, budget, chunk_size, lam, device, verbose=False, beta=0.0, topk=32, step=0, lb_every_n=2):
     """
-    One training step.
+    One training step: L = L_A + lam * L_C + beta * L_B
 
-    L = L_A + lam * L_C + beta * L_B
-    L_A: CE(student, teacher_argmax) — top-1 acceptance
-    L_C: same as L_A but with sparse cache — multi-view
-    L_B: hinge top-k KL = max(0, KL_full - KL_sparse) on teacher's top-k tokens
+    L_A: CE(student_FULL_cache, teacher_argmax) — always computed
+    L_C: CE(student_SPARSE_cache, teacher_argmax) — with random budget
+    L_B: hinge top-k KL (optional, every lb_every_n steps)
 
-    L_B only computed every lb_every_n steps to save cost.
+    Key: TWO student continuation forwards per step (full + sparse).
     """
     V = student.config.vocab_size
     use_sparse = budget < prefix_len
-    # L_B: only when beta>0, sparse, and on schedule (every N steps)
     use_lb = beta > 0 and use_sparse and (step % lb_every_n == 0)
 
     # 1. Teacher forward (no grad)
     if verbose:
-        print(f"    [1/4] Teacher forward (L_B={'on' if use_lb else 'off'})...", flush=True)
+        print(f"    [1/5] Teacher forward (L_B={'on' if use_lb else 'off'})...", flush=True)
 
     if use_lb:
-        # Get top-1 targets + top-k logits + prefix cache for sparse reuse
         teacher_targets, topk_indices, teacher_full_topk, teacher_prefix_cache = get_teacher_topk_logits(
             teacher, input_ids, prefix_len, cont_len, prefill_chunk=1024, topk=topk
         )
-        # Teacher sparse forward at same top-k positions
         teacher_sparse_topk = get_teacher_sparse_topk_logits(
             teacher, input_ids, teacher_prefix_cache, prefix_len, cont_len, budget, chunk_size, device, topk_indices
         )
@@ -200,7 +196,7 @@ def train_step(student, teacher, input_ids, prefix_len, cont_len, budget, chunk_
 
     # 2. Student prefill prefix (no grad, chunked)
     if verbose:
-        print("    [2/4] Student prefill (no grad)...", flush=True)
+        print("    [2/5] Student prefill (no grad)...", flush=True)
     student.eval()
     with torch.no_grad():
         prefix_cache = None
@@ -217,61 +213,73 @@ def train_step(student, teacher, input_ids, prefix_len, cont_len, budget, chunk_
             del chunk_out
     student.train()
 
-    # 3. Sparsify cache if needed, then continuation forward (WITH grad)
     cont_ids = input_ids[:, prefix_len:]
 
+    # 3. L_A: Student FULL cache forward (WITH grad)
+    if verbose:
+        print("    [3/5] Student FULL forward (L_A)...", flush=True)
+    # Deep copy prefix cache for full forward (sparse will modify it)
+    full_cache_tuples = cache_to_tuples(prefix_cache)
+    full_cache = build_dynamic_cache(
+        tuple((k.clone(), v.clone()) for k, v in full_cache_tuples)
+    )
+    full_out = student(cont_ids, past_key_values=full_cache)
+    full_logits = full_out.logits[:, :-1, :]  # [1, cont_len-1, V]
+    loss_a = F.cross_entropy(full_logits.reshape(-1, V), teacher_targets.reshape(-1))
+    del full_out, full_cache, full_logits
+
+    # 4. L_C: Student SPARSE cache forward (WITH grad)
     if use_sparse:
         if verbose:
-            print(f"    [3/4] Sparse forward (budget={budget})...", flush=True)
+            print(f"    [4/5] Student SPARSE forward (L_C, budget={budget})...", flush=True)
         kv_tuples = cache_to_tuples(prefix_cache)
         sparse_tuples, _ = apply_triforce_sparse(kv_tuples, budget, chunk_size)
         cont_cache = build_dynamic_cache(sparse_tuples)
         cont_pos = torch.arange(prefix_len, prefix_len + cont_len, device=device).unsqueeze(0)
-        cont_out = student(cont_ids, past_key_values=cont_cache, position_ids=cont_pos)
-        del prefix_cache
+        sparse_out = student(cont_ids, past_key_values=cont_cache, position_ids=cont_pos)
+        sparse_logits = sparse_out.logits[:, :-1, :]  # [1, cont_len-1, V]
+        loss_c = F.cross_entropy(sparse_logits.reshape(-1, V), teacher_targets.reshape(-1))
     else:
-        if verbose:
-            print("    [3/4] Full forward...", flush=True)
-        cont_out = student(cont_ids, past_key_values=prefix_cache)
+        # budget >= prefix_len: no sparse, L_C = L_A
+        loss_c = loss_a.detach() * 0  # zero contribution
+        sparse_logits = None
 
-    # 4. Compute loss
+    del prefix_cache
+
+    # 5. Compute total loss
     if verbose:
-        print("    [4/4] Loss computation...", flush=True)
+        print("    [5/5] Loss computation...", flush=True)
 
-    student_logits = cont_out.logits[:, :-1, :]  # [1, cont_len-1, V]
+    loss = loss_a + lam * loss_c
 
-    # L_A + L_C (CE with teacher argmax)
-    loss_ce = F.cross_entropy(student_logits.reshape(-1, V), teacher_targets.reshape(-1))
-
-    if use_lb:
-        # Top-k KL: gather student logits at teacher's top-k positions
-        student_topk_logits = torch.gather(student_logits, -1, topk_indices)  # [1, cont_len-1, k]
-
-        # Normalize over k tokens (log_softmax)
+    if use_lb and sparse_logits is not None:
+        # Top-k KL on sparse student logits
+        student_topk_logits = torch.gather(sparse_logits, -1, topk_indices)
         student_topk_lp = F.log_softmax(student_topk_logits.float(), dim=-1)
         teacher_full_topk_lp = F.log_softmax(teacher_full_topk.float(), dim=-1)
         teacher_sparse_topk_lp = F.log_softmax(teacher_sparse_topk.float(), dim=-1)
 
-        # KL on k tokens only — much smaller scale
         kl_full = F.kl_div(student_topk_lp, teacher_full_topk_lp, reduction='batchmean', log_target=True)
         kl_sparse = F.kl_div(student_topk_lp, teacher_sparse_topk_lp, reduction='batchmean', log_target=True)
 
-        # Hinge: max(0, KL_full - KL_sparse + m), m=0
         loss_b = torch.clamp(kl_full - kl_sparse, min=0.0)
-        loss = loss_ce + beta * loss_b
+        loss = loss + beta * loss_b
 
         if verbose:
-            print(f"    L_CE={loss_ce.item():.4f}, L_B={loss_b.item():.4f} (KL_full={kl_full.item():.4f}, KL_sparse={kl_sparse.item():.4f})", flush=True)
+            print(f"    L_A={loss_a.item():.4f}, L_C={loss_c.item():.4f}, L_B={loss_b.item():.4f}", flush=True)
 
         del teacher_full_topk, teacher_sparse_topk, topk_indices
         del student_topk_logits, student_topk_lp, teacher_full_topk_lp, teacher_sparse_topk_lp
     else:
-        loss = loss_ce
+        if verbose:
+            print(f"    L_A={loss_a.item():.4f}, L_C={loss_c.item():.4f}", flush=True)
 
     if verbose:
-        print(f"    loss={loss.item():.4f} (sparse={use_sparse})", flush=True)
+        print(f"    total_loss={loss.item():.4f} (L_A + {lam}*L_C{f' + {beta}*L_B' if use_lb else ''})", flush=True)
 
-    del cont_out, student_logits, teacher_targets
+    del cont_ids, teacher_targets
+    if sparse_logits is not None:
+        del sparse_out, sparse_logits
     return loss.item(), loss
 
 
