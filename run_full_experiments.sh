@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# run_full_experiments.sh — single entry point for the paper's eval matrix.
+#
+# Sections:
+#   1. MAIN          : A+0.5C ckpt, 3 datasets × 3 contexts (4K/8K/16K) ×
+#                      γ ∈ {5,10,15,...,150} × budgets {256,512,1024,2048}.
+#                      Each CSV contains both `original` (untrained 68M) and
+#                      `tinydraft` (trained 68M) rows.
+#   2. ABLATION      : A-only ckpt, 3 datasets × 3 contexts, γ=5 fixed.
+#                      Paired with section 1 at γ=5 for A+0.5C vs A-only.
+#   3. λ SENSITIVITY : A+C ckpt,    3 datasets × 3 contexts, γ=5 fixed.
+#                      Paired with section 1 at γ=5 for A+0.5C vs A+C.
+#
+# TriForce comparison is NOT in this script (needs transformers==4.37.2).
+# Run from inside the repo root, on the RunPod box with the GPU.
+#
+# Override checkpoint paths via env vars if needed:
+#   CKPT_MAIN=...  CKPT_AONLY=...  CKPT_AC=...  ./run_full_experiments.sh
+#
+# Resume-safe: any CSV that already exists is skipped.
+
+set -euo pipefail
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+# ---- paths -----------------------------------------------------------------
+CKPT_MAIN="${CKPT_MAIN:-/workspace/tf/checkpoints/tinydraft_phase_a_16k/final}"   # A+0.5C (primary)
+CKPT_AONLY="${CKPT_AONLY:-/workspace/tf/checkpoints/tinydraft_aonly/final}"        # A-only
+CKPT_AC="${CKPT_AC:-/workspace/tf/checkpoints/tinydraft_ac/final}"                 # A+C (λ=1.0)
+
+TARGET="NousResearch/Yarn-Llama-2-7b-128k"
+ORIGINAL="JackFram/llama-68m"
+EVAL_PY="sd_code/hl/eval_tinydraft.py"
+
+RESULTS_ROOT="results/full"
+mkdir -p "$RESULTS_ROOT/main" "$RESULTS_ROOT/ablation_a_only" "$RESULTS_ROOT/lambda_ac"
+
+# ---- grid ------------------------------------------------------------------
+DATASETS=(gs longbench_packed_qmsum lwm)
+BUDGETS="256,512,1024,2048"
+
+# γ = 5, 10, 15, ..., 150  (30 values)
+GAMMAS=()
+for g in $(seq 5 5 150); do GAMMAS+=("$g"); done
+
+# context configs: index 0=4K, 1=8K, 2=16K
+CTX_LABELS=(4k 8k 16k)
+CTX_MODES=(short long long)            # eval_tinydraft.py: short ≈ 4K, long needs --max_length
+CTX_MAXLEN_ARGS=("" "--max_length 8192" "--max_length 16384")
+
+MAX_SAMPLES="${MAX_SAMPLES:-10}"
+WARMUP="${WARMUP:-1}"
+
+# ---- helpers ---------------------------------------------------------------
+# run_eval <output_csv> <ckpt> <dataset> <ctx_mode> <maxlen_arg> <gamma>
+run_eval () {
+  local out="$1" ckpt="$2" ds="$3" mode="$4" maxlen="$5" gamma="$6"
+  if [ -f "$out" ]; then
+    echo "  [skip] $out exists"
+    return 0
+  fi
+  # $maxlen is intentionally unquoted: empty string -> no arg, "--max_length N" -> two args.
+  # shellcheck disable=SC2086
+  python3 "$EVAL_PY" \
+      --target_model "$TARGET" \
+      --original_student "$ORIGINAL" \
+      --trained_student "$ckpt" \
+      --dataset "$ds" \
+      --context "$mode" $maxlen \
+      --gamma "$gamma" \
+      --budgets "$BUDGETS" \
+      --max_samples "$MAX_SAMPLES" \
+      --warmup "$WARMUP" \
+      --output_csv "$out"
+}
+
+banner () {
+  echo ""
+  echo "============================================================"
+  echo " $1"
+  echo "============================================================"
+}
+
+# ---- sanity ----------------------------------------------------------------
+[ -f "$EVAL_PY" ] || { echo "ERROR: $EVAL_PY not found (run from repo root)"; exit 1; }
+for c in "$CKPT_MAIN" "$CKPT_AONLY" "$CKPT_AC"; do
+  [ -d "$c" ] || echo "WARN: checkpoint dir missing: $c"
+done
+
+START_TS="$(date +%s)"
+echo "Start: $(date)"
+echo "Main ckpt   : $CKPT_MAIN"
+echo "A-only ckpt : $CKPT_AONLY"
+echo "A+C ckpt    : $CKPT_AC"
+echo "Datasets    : ${DATASETS[*]}"
+echo "γ grid      : ${GAMMAS[*]}"
+echo "Budgets     : $BUDGETS"
+
+# ---- 1. MAIN ---------------------------------------------------------------
+banner "1. MAIN — A+0.5C, 3 ds × 3 ctx × ${#GAMMAS[@]} γ × 4 budgets"
+for i in 0 1 2; do
+  LBL="${CTX_LABELS[$i]}"; MODE="${CTX_MODES[$i]}"; MAXLEN="${CTX_MAXLEN_ARGS[$i]}"
+  for DS in "${DATASETS[@]}"; do
+    for G in "${GAMMAS[@]}"; do
+      OUT="$RESULTS_ROOT/main/eval_${LBL}_${DS}_g${G}.csv"
+      echo "[main] ctx=$LBL ds=$DS γ=$G -> $OUT"
+      run_eval "$OUT" "$CKPT_MAIN" "$DS" "$MODE" "$MAXLEN" "$G"
+    done
+  done
+done
+
+# ---- 2. ABLATION (A-only) --------------------------------------------------
+G_ABL=5
+banner "2. ABLATION — A-only ckpt, 3 ds × 3 ctx, γ=$G_ABL"
+for i in 0 1 2; do
+  LBL="${CTX_LABELS[$i]}"; MODE="${CTX_MODES[$i]}"; MAXLEN="${CTX_MAXLEN_ARGS[$i]}"
+  for DS in "${DATASETS[@]}"; do
+    OUT="$RESULTS_ROOT/ablation_a_only/eval_${LBL}_${DS}_g${G_ABL}.csv"
+    echo "[ablation_a_only] ctx=$LBL ds=$DS γ=$G_ABL -> $OUT"
+    run_eval "$OUT" "$CKPT_AONLY" "$DS" "$MODE" "$MAXLEN" "$G_ABL"
+  done
+done
+
+# ---- 3. λ SENSITIVITY (A+C) ------------------------------------------------
+G_LAM=5
+banner "3. λ SENSITIVITY — A+C ckpt, 3 ds × 3 ctx, γ=$G_LAM"
+for i in 0 1 2; do
+  LBL="${CTX_LABELS[$i]}"; MODE="${CTX_MODES[$i]}"; MAXLEN="${CTX_MAXLEN_ARGS[$i]}"
+  for DS in "${DATASETS[@]}"; do
+    OUT="$RESULTS_ROOT/lambda_ac/eval_${LBL}_${DS}_g${G_LAM}.csv"
+    echo "[lambda_ac] ctx=$LBL ds=$DS γ=$G_LAM -> $OUT"
+    run_eval "$OUT" "$CKPT_AC" "$DS" "$MODE" "$MAXLEN" "$G_LAM"
+  done
+done
+
+END_TS="$(date +%s)"
+banner "ALL DONE — elapsed $(( (END_TS - START_TS) / 60 )) min — results under $RESULTS_ROOT/"
