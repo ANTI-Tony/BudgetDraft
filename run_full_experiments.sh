@@ -2,8 +2,11 @@
 # run_full_experiments.sh — single entry point for the paper's eval matrix.
 #
 # Sections:
-#   1. MAIN          : A+0.5C ckpt, 3 datasets × 3 contexts (4K/8K/16K) ×
-#                      γ ∈ {5,10,15,...,150} × budgets {256,512,1024,2048}.
+#   1. MAIN          : A+0.5C ckpt, 3 datasets × 3 contexts × budgets
+#                      {256,512,1024,2048}, with per-context γ grid:
+#                        4K  : γ ∈ {5,10,15,...,60}   (12 values)
+#                        8K  : γ ∈ {5,10,15,...,30}   ( 6 values)
+#                        16K : γ ∈ {5,10,15}          ( 3 values)
 #                      Each CSV contains both `original` (untrained 68M) and
 #                      `tinydraft` (trained 68M) rows.
 #   2. ABLATION      : A-only ckpt, 3 datasets × 3 contexts, γ=5 fixed.
@@ -38,9 +41,13 @@ mkdir -p "$RESULTS_ROOT/main" "$RESULTS_ROOT/ablation_a_only" "$RESULTS_ROOT/lam
 DATASETS=(gs longbench_packed_qmsum lwm)
 BUDGETS="256,512,1024,2048"
 
-# γ = 5, 10, 15, ..., 150  (30 values)
-GAMMAS=()
-for g in $(seq 5 5 150); do GAMMAS+=("$g"); done
+# Per-context γ grid (longer contexts memory-bound -> shorter γ sweep)
+#   4K : 5,10,15,...,60   (12 values)
+#   8K : 5,10,15,...,30   ( 6 values)
+#   16K: 5,10,15          ( 3 values)
+GAMMAS_4K=();  for g in $(seq 5 5  60); do GAMMAS_4K+=("$g");  done
+GAMMAS_8K=();  for g in $(seq 5 5  30); do GAMMAS_8K+=("$g");  done
+GAMMAS_16K=(); for g in $(seq 5 5  15); do GAMMAS_16K+=("$g"); done
 
 # context configs: index 0=4K, 1=8K, 2=16K
 CTX_LABELS=(4k 8k 16k)
@@ -92,15 +99,22 @@ echo "Main ckpt   : $CKPT_MAIN"
 echo "A-only ckpt : $CKPT_AONLY"
 echo "A+C ckpt    : $CKPT_AC"
 echo "Datasets    : ${DATASETS[*]}"
-echo "γ grid      : ${GAMMAS[*]}"
+echo "γ 4K        : ${GAMMAS_4K[*]}"
+echo "γ 8K        : ${GAMMAS_8K[*]}"
+echo "γ 16K       : ${GAMMAS_16K[*]}"
 echo "Budgets     : $BUDGETS"
 
 # ---- 1. MAIN ---------------------------------------------------------------
-banner "1. MAIN — A+0.5C, 3 ds × 3 ctx × ${#GAMMAS[@]} γ × 4 budgets"
+banner "1. MAIN — A+0.5C, 3 ds × 3 ctx, per-context γ grid × 4 budgets"
 for i in 0 1 2; do
   LBL="${CTX_LABELS[$i]}"; MODE="${CTX_MODES[$i]}"; MAXLEN="${CTX_MAXLEN_ARGS[$i]}"
+  case "$LBL" in
+    4k)  CTX_GAMMAS=("${GAMMAS_4K[@]}")  ;;
+    8k)  CTX_GAMMAS=("${GAMMAS_8K[@]}")  ;;
+    16k) CTX_GAMMAS=("${GAMMAS_16K[@]}") ;;
+  esac
   for DS in "${DATASETS[@]}"; do
-    for G in "${GAMMAS[@]}"; do
+    for G in "${CTX_GAMMAS[@]}"; do
       OUT="$RESULTS_ROOT/main/eval_${LBL}_${DS}_g${G}.csv"
       echo "[main] ctx=$LBL ds=$DS γ=$G -> $OUT"
       run_eval "$OUT" "$CKPT_MAIN" "$DS" "$MODE" "$MAXLEN" "$G"
