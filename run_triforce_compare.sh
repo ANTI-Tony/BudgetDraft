@@ -51,24 +51,38 @@ PY_BIN="$(command -v python3 || command -v python)"
 echo "  using $PY_BIN ($($PY_BIN --version))"
 
 if [ ! -d "$VENV_DIR" ]; then
-  # try venv first; fall back to virtualenv if ensurepip is missing
-  "$PY_BIN" -m venv "$VENV_DIR" 2>/dev/null || {
+  # --system-site-packages: inherit the pod's pre-built torch + flash-attn
+  # (matching the system CUDA toolchain). Avoids multi-GB re-downloads and
+  # flash-attn source builds that take 10-30 minutes.
+  "$PY_BIN" -m venv --system-site-packages "$VENV_DIR" 2>/dev/null || {
     "$PY_BIN" -m pip install --user -q virtualenv
-    "$PY_BIN" -m virtualenv "$VENV_DIR"
+    "$PY_BIN" -m virtualenv --system-site-packages "$VENV_DIR"
   }
 fi
 # shellcheck disable=SC1091
 source "$VENV_DIR/bin/activate"
 echo "  venv python: $(which python)  ($(python --version))"
+echo "  upgrading pip..."
+pip install --upgrade pip 2>&1 | tail -1
 
-pip install -q --upgrade pip
-# Install torch only if missing — installing it fresh in a venv can take a while
-# and the pod's system python likely has a matching CUDA build available via
-# --system-site-packages if you re-create the venv with that flag.
-python -c "import torch" 2>/dev/null || pip install -q "torch>=2.1"
-pip install -q "transformers==4.37.2" sentencepiece accelerate datasets
-# flash-attn: prefer prebuilt wheel; build-from-source is slow.
-python -c "import flash_attn" 2>/dev/null || pip install -q flash-attn --no-build-isolation || pip install -q flash-attn
+# Pin transformers to 4.37.2 (TriForce requirement). Reuse system torch/flash-attn
+# via --system-site-packages above. Re-install only if a version mismatch shows up.
+echo "  installing transformers==4.37.2 + small deps..."
+pip install "transformers==4.37.2" sentencepiece accelerate datasets 2>&1 | tail -3
+
+# torch: install only if completely missing (rare with --system-site-packages).
+python -c "import torch" 2>/dev/null || {
+  echo "  torch missing, installing (this is slow)..."
+  pip install "torch>=2.1" 2>&1 | tail -3
+}
+# flash-attn: same — only build if missing and we genuinely need it. TriForce's
+# on_chip.py imports it directly, so without it the script will crash anyway.
+python -c "import flash_attn" 2>/dev/null || {
+  echo "  flash_attn missing — attempting prebuilt wheel..."
+  pip install flash-attn --no-build-isolation 2>&1 | tail -3 || \
+    echo "  WARN: flash-attn install failed; on_chip.py will likely fail to import"
+}
+
 python - <<'PY'
 import torch, transformers
 print(f"  torch={torch.__version__}, cuda={torch.version.cuda}, transformers={transformers.__version__}")
@@ -76,7 +90,7 @@ try:
     import flash_attn
     print(f"  flash_attn={flash_attn.__version__}")
 except Exception as e:
-    print(f"  flash_attn missing: {e}")
+    print(f"  flash_attn NOT importable: {e}")
 PY
 
 # ============== clone + patch TriForce =======================================
