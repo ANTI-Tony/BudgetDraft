@@ -12,12 +12,16 @@
 #   - Patches its modeling_llama.py:
 #       (a) max_position_embeddings 131072 -> 16384
 #       (b) squeeze cos/sin in apply_rotary_pos_emb (transformers 4.37.2 quirk)
-#   - on_chip.py prints a line `Accept rate: X%, Speedup: Y×` — script greps that
+#   - Patches data/dataset.py:
+#       (c) make `lwm` respect args.prefill (upstream hard-codes 127*1024)
+#       (d) add `longbench_packed_qmsum` branch mirroring the TinyDraft loader
+#   - on_chip.py prints `average acceptance rate (NOT per token): X` (fraction)
+#     and `[E2E Speedup]: Y` — script greps those.
 #
 # Output:
 #   /workspace/tf/triforce-reproduce/results/triforce_compare/
 #     <ctx>_<ds>.log              raw run logs
-#     summary.csv                 ctx,ds,accept_pct,speedup,tokens_per_sec
+#     summary.csv                 ctx,ds,accept_rate (fraction),speedup,log
 
 set -euo pipefail
 
@@ -131,7 +135,110 @@ print("  injected cos/sin squeeze guard")
 PY
 
   echo "$SENTINEL" >> "$MODELING"
-  echo "  patches applied; original saved as $MODELING.orig"
+  echo "  patches applied to $MODELING; original saved as $MODELING.orig"
+fi
+
+# (c) data/dataset.py: make `lwm` respect `datalen` and add `longbench_packed_qmsum`
+DATASET_PY="data/dataset.py"
+DS_SENTINEL="# patched-for-tinydraft-eval"
+if [ -f "$DATASET_PY" ] && ! grep -q "$DS_SENTINEL" "$DATASET_PY"; then
+  cp "$DATASET_PY" "$DATASET_PY.orig"
+  python - <<PY
+import re, pathlib
+p = pathlib.Path("$DATASET_PY")
+src = p.read_text()
+
+# 1) Rewrite the existing `lwm` branch to respect the datalen argument
+#    (upstream hard-codes prefill=127*1024 and filters out short prompts).
+new_lwm = '''    elif dataset_name == 'lwm':
+        # patched: dynamic prefill from datalen (was hard-coded 127*1024)
+        prefill = datalen if datalen else 127*1024
+        try:
+            stream = load_dataset("deepmind/narrativeqa", split="train", streaming=True)
+        except Exception:
+            stream = load_dataset("narrativeqa", split="train", streaming=True)
+        idx_set = {0, 50, 300, 800, 950, 1100, 2150, 2450, 2550, 2750,
+                   3350, 3400, 3600, 3900, 4000, 4100, 4200, 4400, 4500, 4550}
+        max_idx = max(idx_set)
+        collected = {}
+        for i, item in enumerate(stream):
+            if i in idx_set:
+                collected[i] = item
+            if i > max_idx:
+                break
+        tokenized_prompts = []
+        for idx in sorted(idx_set):
+            item = collected.get(idx)
+            if item is None:
+                continue
+            doc = item.get('document')
+            doc_text = doc.get('text', '') if isinstance(doc, dict) else (doc or item.get('text', ''))
+            if not doc_text:
+                continue
+            book_tokens = tokenizer.encode(doc_text)[:max(prefill - 100, 1)]
+            prompt = (
+                "You are a helpful assistant. USER: Please read a part of the book below, "
+                "and then give me the summary.\\n[start of the book]\\n"
+                + tokenizer.decode(book_tokens, skip_special_tokens=True)
+                + "\\n[end of the book]\\n\\nNow you have read it. Please summarize it for me.\\n\\nASSISTANT: "
+            )
+            ids = tokenizer.encode(prompt, return_tensors="pt")
+            if ids.shape[-1] > prefill:
+                ids = ids[:, :prefill]
+            tokenized_prompts.append(ids)
+        return tokenized_prompts
+
+'''
+m = re.search(r"    elif dataset_name == 'lwm':.*?(?=\n    elif |\n    else:)", src, re.S)
+assert m, "could not locate lwm branch in $DATASET_PY"
+src = src[:m.start()] + new_lwm + src[m.end()+1:]
+
+# 2) Add a longbench_packed_qmsum branch right before the final `else:`
+new_lb = '''    elif dataset_name == 'longbench_packed_qmsum':
+        # patched: TinyDraft-parity QMSum loader
+        prefill = datalen if datalen else 4096
+        try:
+            ds = load_dataset("THUDM/LongBench", "qmsum", split="test")
+        except Exception:
+            from huggingface_hub import hf_hub_download
+            import zipfile, os, json as _json
+            zp = hf_hub_download(repo_id="THUDM/LongBench", filename="data.zip", repo_type="dataset")
+            ed = os.path.join(os.path.dirname(zp), "longbench_extracted")
+            if not os.path.exists(os.path.join(ed, "qmsum.jsonl")):
+                with zipfile.ZipFile(zp, "r") as zf:
+                    zf.extractall(ed)
+            qp = None
+            for r, _, fs in os.walk(ed):
+                for fn in fs:
+                    if fn == "qmsum.jsonl":
+                        qp = os.path.join(r, fn); break
+            ds = [_json.loads(l) for l in open(qp)]
+        tokenized_prompts = []
+        for item in ds:
+            if len(tokenized_prompts) >= 20:
+                break
+            ctx = item.get('context', '') or item.get('input', '')
+            qry = item.get('input', '') if 'context' in item else ''
+            text = ctx + ("\\n" + qry if qry else "")
+            ids = tokenizer.encode(text, return_tensors="pt")
+            if ids.shape[-1] < prefill // 2:
+                continue
+            if ids.shape[-1] > prefill:
+                ids = ids[:, :prefill]
+            tokenized_prompts.append(ids)
+        return tokenized_prompts
+
+'''
+m2 = re.search(r"\n    else:\s*\n\s*raise Exception\(\"Dataset not found\"\)", src)
+assert m2, "could not locate final else clause"
+src = src[:m2.start()+1] + new_lb + src[m2.start()+1:]
+
+p.write_text(src + "\n$DS_SENTINEL\n")
+print("  patched $DATASET_PY: dynamic lwm + longbench_packed_qmsum")
+PY
+  echo "  data/dataset.py patched; original saved as $DATASET_PY.orig"
+elif [ -f "$DATASET_PY" ]; then
+  echo "  $DATASET_PY already patched (sentinel found)"
 fi
 
 # ============== run 7 combos =================================================
@@ -140,16 +247,16 @@ banner "3/4  run 7 combos"
 # (ctx_label, prefill, budget, draft, chunk, dataset)
 COMBOS=(
   "4k  3800  128 128 1 gs"
-  "4k  3800  128 128 1 longbench"
+  "4k  3800  128 128 1 longbench_packed_qmsum"
   "4k  3800  128 128 1 lwm"
-  "8k  8064  264 128 1 longbench"
+  "8k  8064  264 128 1 longbench_packed_qmsum"
   "8k  8064  264 128 1 lwm"
-  "16k 16128 512 128 2 longbench"
+  "16k 16128 512 128 2 longbench_packed_qmsum"
   "16k 16128 512 128 2 lwm"
 )
 
 SUMMARY="$RESULTS_DIR/summary.csv"
-echo "ctx,ds,accept_pct,speedup,tokens_per_sec,log" > "$SUMMARY"
+echo "ctx,ds,accept_rate,speedup,log" > "$SUMMARY"
 
 for combo in "${COMBOS[@]}"; do
   read -r CTX PREFILL BUDGET DRAFT CHUNK DS <<< "$combo"
@@ -168,13 +275,14 @@ for combo in "${COMBOS[@]}"; do
       --dataset "$DS" \
       2>&1 | tee "$LOG"
 
-  # Parse "Accept rate: X%, Speedup: Y×" and "tokens/sec" if present.
-  ACCEPT=$(grep -Eo 'Accept[[:space:]]*rate[[:space:]]*[:=][[:space:]]*[0-9.]+%?' "$LOG" | tail -1 | grep -Eo '[0-9.]+' | head -1 || true)
-  SPEED=$(grep -Eo 'Speedup[[:space:]]*[:=][[:space:]]*[0-9.]+[xX×]?' "$LOG" | tail -1 | grep -Eo '[0-9.]+' | head -1 || true)
-  TPS=$(grep -Eo '[0-9.]+[[:space:]]*tok(en)?s?/s' "$LOG" | tail -1 | grep -Eo '[0-9.]+' | head -1 || true)
+  # on_chip.py prints e.g.:
+  #   average acceptance rate (NOT per token): 0.7178
+  #   [E2E Speedup]: 1.38
+  ACCEPT=$(grep -E 'average acceptance rate' "$LOG" | tail -1 | grep -Eo '[0-9]+\.[0-9]+' | tail -1 || true)
+  SPEED=$(grep -E '\[E2E Speedup\]' "$LOG"        | tail -1 | grep -Eo '[0-9]+\.[0-9]+' | tail -1 || true)
 
-  echo "${CTX},${DS},${ACCEPT:-NA},${SPEED:-NA},${TPS:-NA},${LOG##*/}" >> "$SUMMARY"
-  echo "  -> accept=${ACCEPT:-NA}%  speedup=${SPEED:-NA}x  tps=${TPS:-NA}"
+  echo "${CTX},${DS},${ACCEPT:-NA},${SPEED:-NA},${LOG##*/}" >> "$SUMMARY"
+  echo "  -> accept=${ACCEPT:-NA}  speedup=${SPEED:-NA}x"
 done
 
 # ============== summary ======================================================
