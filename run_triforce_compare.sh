@@ -95,10 +95,18 @@ PY
 
 # ============== clone + patch TriForce =======================================
 banner "2/4  clone + patch TriForce"
-if [ ! -d "$TF_REPO_DIR/.git" ]; then
+if [ ! -d "$TF_REPO_DIR" ]; then
   git clone "$TRIFORCE_GIT" "$TF_REPO_DIR"
+elif [ -d "$TF_REPO_DIR/.git" ]; then
+  echo "  reusing existing git checkout at $TF_REPO_DIR"
+else
+  echo "  $TF_REPO_DIR exists without .git — assuming it contains a usable TriForce snapshot"
 fi
 cd "$TF_REPO_DIR"
+# Sanity-check the three files we touch / invoke
+for f in models/modeling_llama.py data/dataset.py test/on_chip.py; do
+  [ -f "$f" ] || { echo "ERROR: $TF_REPO_DIR/$f missing — wrong checkout?"; exit 1; }
+done
 # install TriForce's own requirements if present
 [ -f requirements.txt ] && pip install -q -r requirements.txt || true
 
