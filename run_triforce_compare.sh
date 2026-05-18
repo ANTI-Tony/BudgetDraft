@@ -95,18 +95,43 @@ PY
 
 # ============== clone + patch TriForce =======================================
 banner "2/4  clone + patch TriForce"
+
+needs_clone=0
 if [ ! -d "$TF_REPO_DIR" ]; then
-  git clone "$TRIFORCE_GIT" "$TF_REPO_DIR"
-elif [ -d "$TF_REPO_DIR/.git" ]; then
-  echo "  reusing existing git checkout at $TF_REPO_DIR"
+  needs_clone=1
+elif [ ! -f "$TF_REPO_DIR/test/on_chip.py" ] || [ ! -f "$TF_REPO_DIR/models/modeling_llama.py" ] || [ ! -f "$TF_REPO_DIR/data/dataset.py" ]; then
+  echo "  $TF_REPO_DIR exists but is missing TriForce source files — wiping non-results contents and re-cloning"
+  # Preserve any results/ subdir, blow everything else away
+  if [ -d "$TF_REPO_DIR/results" ]; then
+    mv "$TF_REPO_DIR/results" "${TF_REPO_DIR}.results.bak"
+  fi
+  # If $TF_REPO_DIR is a mount point, rm -rf the *contents* not the dir itself
+  find "$TF_REPO_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  needs_clone=1
 else
-  echo "  $TF_REPO_DIR exists without .git — assuming it contains a usable TriForce snapshot"
+  echo "  reusing existing TriForce checkout at $TF_REPO_DIR"
 fi
+
+if [ "$needs_clone" = "1" ]; then
+  if [ -d "$TF_REPO_DIR" ] && [ -z "$(ls -A "$TF_REPO_DIR" 2>/dev/null)" ]; then
+    # empty dir — clone into it
+    git clone "$TRIFORCE_GIT" "$TF_REPO_DIR.tmp"
+    mv "$TF_REPO_DIR.tmp"/* "$TF_REPO_DIR.tmp"/.* "$TF_REPO_DIR/" 2>/dev/null || true
+    rmdir "$TF_REPO_DIR.tmp"
+  else
+    git clone "$TRIFORCE_GIT" "$TF_REPO_DIR"
+  fi
+  # Restore any preserved results
+  if [ -d "${TF_REPO_DIR}.results.bak" ]; then
+    mv "${TF_REPO_DIR}.results.bak" "$TF_REPO_DIR/results"
+  fi
+fi
+
 cd "$TF_REPO_DIR"
-# Sanity-check the three files we touch / invoke
 for f in models/modeling_llama.py data/dataset.py test/on_chip.py; do
-  [ -f "$f" ] || { echo "ERROR: $TF_REPO_DIR/$f missing — wrong checkout?"; exit 1; }
+  [ -f "$f" ] || { echo "ERROR: $TF_REPO_DIR/$f still missing after clone — bail"; exit 1; }
 done
+echo "  TriForce source verified"
 # install TriForce's own requirements if present
 [ -f requirements.txt ] && pip install -q -r requirements.txt || true
 
