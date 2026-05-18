@@ -23,7 +23,7 @@ set -euo pipefail
 
 # ============== knobs (override via env) =====================================
 TF_REPO_DIR="${TF_REPO_DIR:-/workspace/tf/triforce-reproduce}"
-CONDA_ENV="${CONDA_ENV:-triforce_eval}"
+VENV_DIR="${VENV_DIR:-/workspace/tf/triforce_venv}"
 HF_CACHE="${HF_CACHE:-/workspace/tf/hf_cache}"
 RESULTS_DIR="${RESULTS_DIR:-$TF_REPO_DIR/results/triforce_compare}"
 TRIFORCE_GIT="${TRIFORCE_GIT:-https://github.com/Infini-AI-Lab/TriForce.git}"
@@ -38,24 +38,41 @@ export HF_DATASETS_CACHE="$HF_CACHE/datasets"
 
 mkdir -p "$RESULTS_DIR"
 
-# ============== conda env setup ==============================================
+# ============== venv setup ===================================================
 banner () { echo; echo "============================================================"; echo " $1"; echo "============================================================"; }
 
-banner "1/4  conda env: $CONDA_ENV"
-# shellcheck disable=SC1091
-source "$(conda info --base)/etc/profile.d/conda.sh"
-if ! conda env list | awk '{print $1}' | grep -qx "$CONDA_ENV"; then
-  conda create -y -n "$CONDA_ENV" python=3.10
+banner "1/4  python venv: $VENV_DIR"
+PY_BIN="$(command -v python3 || command -v python)"
+[ -n "$PY_BIN" ] || { echo "ERROR: no python3 on PATH"; exit 1; }
+echo "  using $PY_BIN ($($PY_BIN --version))"
+
+if [ ! -d "$VENV_DIR" ]; then
+  # try venv first; fall back to virtualenv if ensurepip is missing
+  "$PY_BIN" -m venv "$VENV_DIR" 2>/dev/null || {
+    "$PY_BIN" -m pip install --user -q virtualenv
+    "$PY_BIN" -m virtualenv "$VENV_DIR"
+  }
 fi
-conda activate "$CONDA_ENV"
+# shellcheck disable=SC1091
+source "$VENV_DIR/bin/activate"
+echo "  venv python: $(which python)  ($(python --version))"
 
 pip install -q --upgrade pip
-pip install -q "transformers==4.37.2" "torch>=2.1" sentencepiece accelerate datasets
-# flash-attn must be installed with matching CUDA — let it pick wheels.
-pip install -q --no-build-isolation flash-attn || pip install -q flash-attn
+# Install torch only if missing — installing it fresh in a venv can take a while
+# and the pod's system python likely has a matching CUDA build available via
+# --system-site-packages if you re-create the venv with that flag.
+python -c "import torch" 2>/dev/null || pip install -q "torch>=2.1"
+pip install -q "transformers==4.37.2" sentencepiece accelerate datasets
+# flash-attn: prefer prebuilt wheel; build-from-source is slow.
+python -c "import flash_attn" 2>/dev/null || pip install -q flash-attn --no-build-isolation || pip install -q flash-attn
 python - <<'PY'
 import torch, transformers
 print(f"  torch={torch.__version__}, cuda={torch.version.cuda}, transformers={transformers.__version__}")
+try:
+    import flash_attn
+    print(f"  flash_attn={flash_attn.__version__}")
+except Exception as e:
+    print(f"  flash_attn missing: {e}")
 PY
 
 # ============== clone + patch TriForce =======================================
