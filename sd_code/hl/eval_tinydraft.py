@@ -22,12 +22,14 @@ from speculative_decoding import speculative_generate
 
 def run_sd_eval(target, drafter, tokenizer, prompts, gamma, budget, chunk_size,
                 max_new_tokens, warmup, device):
-    """Run SD and return (throughput, acceptance_rate, total_tokens, total_time)."""
+    """Run SD. Returns (throughput, accept_rate, total_tokens, total_time, samples)
+    where `samples` is a list of per-sample dicts (warmup samples flagged but kept)."""
     eos_id = tokenizer.eos_token_id or 2
     total_tokens = 0
     total_time = 0.0
     total_accepted = 0.0
     total_speculated = 0.0
+    samples = []
 
     n_prompts = len(prompts)
     for i, prompt in enumerate(prompts):
@@ -54,20 +56,35 @@ def run_sd_eval(target, drafter, tokenizer, prompts, gamma, budget, chunk_size,
         torch.cuda.synchronize()
         t1 = time.time()
         elapsed = t1 - t0
+        gen_len = len(output)
         acc = accepted / speculated if speculated > 0 else 0
+        tps = gen_len / elapsed if elapsed > 0 else 0.0
 
-        if i >= warmup:
-            total_tokens += len(output)
-            total_time += t1 - t0
+        is_warmup = (i < warmup)
+        if not is_warmup:
+            total_tokens += gen_len
+            total_time += elapsed
             total_accepted += accepted
             total_speculated += speculated
 
-        print(f" {elapsed:.1f}s  accept={acc:.3f}  gen={len(output)} tokens", flush=True)
+        samples.append({
+            "sample_idx": i,
+            "warmup": int(is_warmup),
+            "prompt_len": len(tokens),
+            "gen_len": gen_len,
+            "elapsed_s": round(elapsed, 4),
+            "throughput": round(tps, 3),
+            "accept_rate": round(acc, 4),
+            "accepted": int(accepted),
+            "speculated": int(speculated),
+        })
+
+        print(f" {elapsed:.1f}s  accept={acc:.3f}  gen={gen_len} tokens", flush=True)
         torch.cuda.empty_cache()
 
     throughput = total_tokens / total_time if total_time > 0 else 0
     accept_rate = total_accepted / total_speculated if total_speculated > 0 else 0
-    return throughput, accept_rate, total_tokens, total_time
+    return throughput, accept_rate, total_tokens, total_time, samples
 
 
 def main():
@@ -136,6 +153,7 @@ def main():
     print(f"Loaded {len(prompts)} prompts\n")
 
     results = []
+    sample_records = []
 
     for student_label, student_path in [
         ("original", args.original_student),
@@ -168,7 +186,7 @@ def main():
             print(f"\n  [{student_label}] budget={budget_label} gamma={args.gamma}...")
 
             torch.cuda.reset_peak_memory_stats()
-            throughput, accept_rate, total_tok, total_t = run_sd_eval(
+            throughput, accept_rate, total_tok, total_t, samples = run_sd_eval(
                 target, drafter, tokenizer, prompts,
                 args.gamma, budget, args.chunk_size,
                 args.max_new_tokens, args.warmup, device,
@@ -191,6 +209,15 @@ def main():
                 "total_time": f"{total_t:.2f}",
                 "peak_gpu_mb": f"{peak_mb:.0f}",
             })
+            for s in samples:
+                sample_records.append({
+                    "student": student_label,
+                    "dataset": args.dataset,
+                    "context": args.context,
+                    "budget": budget_label,
+                    "gamma": args.gamma,
+                    **s,
+                })
 
         del drafter
         torch.cuda.empty_cache()
@@ -212,6 +239,16 @@ def main():
             writer.writeheader()
             writer.writerows(results)
         print(f"\nResults saved to {args.output_csv}")
+
+        # Companion per-sample CSV for error-bar / variance analysis
+        if sample_records:
+            base, ext = os.path.splitext(args.output_csv)
+            samples_csv = f"{base}_samples{ext or '.csv'}"
+            with open(samples_csv, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=sample_records[0].keys())
+                writer.writeheader()
+                writer.writerows(sample_records)
+            print(f"Per-sample data saved to {samples_csv}")
 
 
 if __name__ == "__main__":
