@@ -340,6 +340,51 @@ elif [ -f "$DATASET_PY" ]; then
   echo "  $DATASET_PY already patched (sentinel found)"
 fi
 
+# (d) utils/sampling.py: harden sample() against fp16 nan/inf probabilities.
+#     YarnLlama at long contexts on LWM-style prompts occasionally produces
+#     non-finite logits → softmax outputs nan/inf → torch.multinomial crashes
+#     with 'probability tensor contains inf, nan or element < 0'. We replace
+#     non-finite entries with 0, clamp negatives, renormalize, and fall back
+#     to uniform if a row degenerates to all-zero.
+SAMPLING_PY="utils/sampling.py"
+SAMPLING_SENTINEL="# patched-sample-nan-guard-v1"
+if [ -f "$SAMPLING_PY.orig" ] && ! grep -q "$SAMPLING_SENTINEL" "$SAMPLING_PY"; then
+  cp "$SAMPLING_PY.orig" "$SAMPLING_PY"
+fi
+if [ -f "$SAMPLING_PY" ] && ! grep -q "$SAMPLING_SENTINEL" "$SAMPLING_PY"; then
+  cp "$SAMPLING_PY" "$SAMPLING_PY.orig"
+  python - "$SAMPLING_PY" "$SAMPLING_SENTINEL" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+sentinel = sys.argv[2]
+src = p.read_text()
+
+needle = "def sample(probs : torch.Tensor, num_samples=1):\n"
+i = src.find(needle)
+if i == -1:
+    needle = "def sample(probs: torch.Tensor, num_samples=1):\n"
+    i = src.find(needle)
+if i == -1:
+    raise SystemExit(f"could not locate def sample(...) in {p}")
+
+inject = (
+    "    if not torch.isfinite(probs).all() or (probs < 0).any():\n"
+    "        probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)\n"
+    "        probs = probs.clamp(min=0)\n"
+    "        s = probs.sum(dim=-1, keepdim=True)\n"
+    "        probs = torch.where(s > 0, probs / s,\n"
+    "                            torch.ones_like(probs) / probs.shape[-1])\n"
+)
+insertion = i + len(needle)
+src = src[:insertion] + inject + src[insertion:]
+p.write_text(src + "\n" + sentinel + "\n")
+print(f"  patched {p}: nan/inf guard around torch.multinomial")
+PY
+  echo "  utils/sampling.py patched; original saved as $SAMPLING_PY.orig"
+elif [ -f "$SAMPLING_PY" ]; then
+  echo "  $SAMPLING_PY already patched (sentinel found)"
+fi
+
 # ============== run 7 combos =================================================
 banner "3/4  run 7 combos"
 
@@ -360,13 +405,20 @@ COMBOS=(
 )
 
 SUMMARY="$RESULTS_DIR/summary.csv"
-echo "ctx,ds,accept_rate,speedup,log" > "$SUMMARY"
 
 for combo in "${COMBOS[@]}"; do
   read -r CTX PREFILL BUDGET DRAFT CHUNK DS <<< "$combo"
   LOG="$RESULTS_DIR/${CTX}_${DS}.log"
   banner "  $CTX / $DS  (prefill=$PREFILL budget=$BUDGET draft=$DRAFT chunk=$CHUNK)"
 
+  # Skip if log already has a complete result (both Accept rate + E2E Speedup lines)
+  if [ -f "$LOG" ] && grep -q 'average acceptance rate' "$LOG" && grep -q '\[E2E Speedup\]' "$LOG"; then
+    echo "  [skip] $LOG already has Accept rate + E2E Speedup"
+    continue
+  fi
+
+  # set +e for this block so a crash in on_chip.py doesn't kill the whole loop
+  set +e
   python test/on_chip.py \
       --prefill "$PREFILL" \
       --gen_len "$GEN_LEN" \
@@ -378,19 +430,32 @@ for combo in "${COMBOS[@]}"; do
       --temp "$TEMP" \
       --dataset "$DS" \
       2>&1 | tee "$LOG"
-
-  # on_chip.py prints e.g.:
-  #   average acceptance rate (NOT per token): 0.7178
-  #   [E2E Speedup]: 1.38
-  ACCEPT=$(grep -E 'average acceptance rate' "$LOG" | tail -1 | grep -Eo '[0-9]+\.[0-9]+' | tail -1 || true)
-  SPEED=$(grep -E '\[E2E Speedup\]' "$LOG"        | tail -1 | grep -Eo '[0-9]+\.[0-9]+' | tail -1 || true)
-
-  echo "${CTX},${DS},${ACCEPT:-NA},${SPEED:-NA},${LOG##*/}" >> "$SUMMARY"
-  echo "  -> accept=${ACCEPT:-NA}  speedup=${SPEED:-NA}x"
+  rc=${PIPESTATUS[0]}
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    echo "  WARN: on_chip.py exited $rc for $CTX/$DS — continuing to next combo"
+  fi
 done
 
 # ============== summary ======================================================
-banner "4/4  summary"
+banner "4/4  summary (rebuilt from logs)"
+echo "ctx,ds,accept_rate,speedup,log,status" > "$SUMMARY"
+for combo in "${COMBOS[@]}"; do
+  read -r CTX PREFILL BUDGET DRAFT CHUNK DS <<< "$combo"
+  LOG="$RESULTS_DIR/${CTX}_${DS}.log"
+  if [ ! -f "$LOG" ]; then
+    echo "${CTX},${DS},NA,NA,${CTX}_${DS}.log,missing" >> "$SUMMARY"
+    continue
+  fi
+  ACCEPT=$(grep -E 'average acceptance rate' "$LOG" | tail -1 | grep -Eo '[0-9]+\.[0-9]+' | tail -1 || true)
+  SPEED=$(grep  -E '\[E2E Speedup\]'         "$LOG" | tail -1 | grep -Eo '[0-9]+\.[0-9]+' | tail -1 || true)
+  if [ -n "$ACCEPT" ] && [ -n "$SPEED" ]; then
+    STATUS="ok"
+  else
+    STATUS="crashed"
+  fi
+  echo "${CTX},${DS},${ACCEPT:-NA},${SPEED:-NA},${CTX}_${DS}.log,${STATUS}" >> "$SUMMARY"
+done
 column -s, -t < "$SUMMARY" || cat "$SUMMARY"
 echo
 echo "Done. Summary: $SUMMARY"
