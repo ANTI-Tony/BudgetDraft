@@ -184,9 +184,10 @@ else
   #     cos/sin with extra leading length-1 dims, the broadcast breaks. TriForce
   #     imports apply_rotary_pos_emb from transformers, so we patch the call
   #     site here instead of the (vendored) function definition.
-  python - <<PY
-import pathlib
-p = pathlib.Path("$MODELING")
+  # Quoted heredoc (<<'PY') so bash doesn't process backslash sequences inside.
+  python - "$MODELING" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
 src = p.read_text()
 needle = "cos, sin = self.rotary_emb"
 sites = []
@@ -198,18 +199,17 @@ while True:
     sites.append(j)
     off = j + 1
 if not sites:
-    raise SystemExit("could not locate any 'cos, sin = self.rotary_emb' call site")
+    raise SystemExit(f"could not locate any 'cos, sin = self.rotary_emb' call site in {p}")
 
-# Walk back-to-front so earlier offsets stay valid.
 for j in reversed(sites):
-    eol = src.find("\\n", j)
-    line_start = src.rfind("\\n", 0, j) + 1
+    eol = src.find("\n", j)
+    line_start = src.rfind("\n", 0, j) + 1
     indent = ""
     k = line_start
-    while k < len(src) and src[k] in " \\t":
+    while k < len(src) and src[k] in " \t":
         indent += src[k]; k += 1
-    inject = ("\\n" + indent + "while cos.dim() > 2: cos = cos.squeeze(0)"
-              + "\\n" + indent + "while sin.dim() > 2: sin = sin.squeeze(0)")
+    inject = ("\n" + indent + "while cos.dim() > 2: cos = cos.squeeze(0)"
+              + "\n" + indent + "while sin.dim() > 2: sin = sin.squeeze(0)")
     src = src[:eol] + inject + src[eol:]
 
 p.write_text(src)
@@ -222,7 +222,10 @@ fi
 
 # (c) data/dataset.py: make `lwm` respect `datalen` and add `longbench_packed_qmsum`
 DATASET_PY="data/dataset.py"
-DS_SENTINEL="# patched-for-tinydraft-eval"
+# v2 sentinel: bumped after v1 wrote a corrupted file due to bash heredoc
+# eating backslash escapes in '\n'. Old files with the v1 sentinel will not
+# match here, so self-heal kicks in and re-patches with the quoted heredoc.
+DS_SENTINEL="# patched-for-tinydraft-eval-v2"
 # Self-heal: restore from .orig if previous patch run bailed mid-way
 if [ -f "$DATASET_PY.orig" ] && ! grep -q "$DS_SENTINEL" "$DATASET_PY"; then
   echo "  recovering from half-patched $DATASET_PY (restoring .orig)"
@@ -230,9 +233,12 @@ if [ -f "$DATASET_PY.orig" ] && ! grep -q "$DS_SENTINEL" "$DATASET_PY"; then
 fi
 if [ -f "$DATASET_PY" ] && ! grep -q "$DS_SENTINEL" "$DATASET_PY"; then
   cp "$DATASET_PY" "$DATASET_PY.orig"
-  python - <<PY
-import re, pathlib
-p = pathlib.Path("$DATASET_PY")
+  # Quoted heredoc — bash does NOT process expansions or backslash escapes.
+  # Path + sentinel passed via argv.
+  python - "$DATASET_PY" "$DS_SENTINEL" <<'PY'
+import re, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+ds_sentinel = sys.argv[2]
 src = p.read_text()
 
 # 1) Rewrite the existing `lwm` branch to respect the datalen argument
@@ -277,7 +283,7 @@ new_lwm = '''    elif dataset_name == 'lwm':
 
 '''
 m = re.search(r"    elif dataset_name == 'lwm':.*?(?=\n    elif |\n    else:)", src, re.S)
-assert m, "could not locate lwm branch in $DATASET_PY"
+assert m, f"could not locate lwm branch in {p}"
 src = src[:m.start()] + new_lwm + src[m.end()+1:]
 
 # 2) Add a longbench_packed_qmsum branch right before the final `else:`
@@ -320,8 +326,8 @@ m2 = re.search(r"\n    else:\s*\n\s*raise Exception\(\"Dataset not found\"\)", s
 assert m2, "could not locate final else clause"
 src = src[:m2.start()+1] + new_lb + src[m2.start()+1:]
 
-p.write_text(src + "\n$DS_SENTINEL\n")
-print("  patched $DATASET_PY: dynamic lwm + longbench_packed_qmsum")
+p.write_text(src + "\n" + ds_sentinel + "\n")
+print(f"  patched {p}: dynamic lwm + longbench_packed_qmsum")
 PY
   echo "  data/dataset.py patched; original saved as $DATASET_PY.orig"
 elif [ -f "$DATASET_PY" ]; then
