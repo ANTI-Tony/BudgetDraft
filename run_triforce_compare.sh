@@ -132,8 +132,11 @@ for f in models/modeling_llama.py data/dataset.py test/on_chip.py; do
   [ -f "$f" ] || { echo "ERROR: $TF_REPO_DIR/$f still missing after clone — bail"; exit 1; }
 done
 echo "  TriForce source verified"
-# install TriForce's own requirements if present
-[ -f requirements.txt ] && pip install -q -r requirements.txt || true
+# install TriForce's own requirements if present (verbose; this one can be slow)
+if [ -f requirements.txt ]; then
+  echo "  installing TriForce's requirements.txt..."
+  pip install -r requirements.txt 2>&1 | tail -5 || true
+fi
 
 MODELING="models/modeling_llama.py"
 if [ ! -f "$MODELING" ]; then
