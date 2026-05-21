@@ -44,10 +44,11 @@ BUDGETS="256,512,1024,2048"
 # Per-context γ grid (longer contexts memory-bound -> shorter γ sweep)
 #   4K : 5,10,15,...,60   (12 values)
 #   8K : 5,10,15,...,30   ( 6 values)
-#   16K: 5,10,15          ( 3 values)
+#   16K: 5,10,15,...,40   ( 8 values)  — bumped from 3 after observing peak still
+#                                        unresolved at γ=15
 GAMMAS_4K=();  for g in $(seq 5 5  60); do GAMMAS_4K+=("$g");  done
 GAMMAS_8K=();  for g in $(seq 5 5  30); do GAMMAS_8K+=("$g");  done
-GAMMAS_16K=(); for g in $(seq 5 5  15); do GAMMAS_16K+=("$g"); done
+GAMMAS_16K=(); for g in $(seq 5 5  40); do GAMMAS_16K+=("$g"); done
 
 # context configs: index 0=4K, 1=8K, 2=16K
 CTX_LABELS=(4k 8k 16k)
