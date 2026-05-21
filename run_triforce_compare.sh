@@ -132,11 +132,29 @@ for f in models/modeling_llama.py data/dataset.py test/on_chip.py; do
   [ -f "$f" ] || { echo "ERROR: $TF_REPO_DIR/$f still missing after clone — bail"; exit 1; }
 done
 echo "  TriForce source verified"
-# install TriForce's own requirements if present (verbose; this one can be slow)
-if [ -f requirements.txt ]; then
-  echo "  installing TriForce's requirements.txt..."
-  pip install -r requirements.txt 2>&1 | tail -5 || true
+# NOTE: deliberately NOT installing TriForce's requirements.txt — it pins
+# torch==2.2.1 which conflicts with the pod's torch 2.4.1+cu124 (and the
+# flash-attn 2.8.3 wheel built against it). The hard deps it actually needs
+# (transformers==4.37.2, accelerate, datasets, sentencepiece, flash-attn,
+# matching torch) are already installed above. Install any leftovers we know
+# on_chip.py needs but the venv might be missing:
+echo "  installing TriForce-specific deps (skipping their torch==2.2.1 pin)..."
+pip install termcolor tiktoken 2>&1 | tail -3
+
+# Heal a possibly-downgraded torch from a previous broken run.
+# The venv has --system-site-packages, so uninstalling a venv-local torch
+# re-exposes the system's torch 2.4.1+cu124 without re-downloading.
+TORCH_VER=$(python -c "import torch; print(torch.__version__)" 2>/dev/null || echo "missing")
+if [[ ! "$TORCH_VER" =~ ^2\.4 ]]; then
+  echo "  WARN: venv torch is $TORCH_VER (need 2.4.x). Uninstalling venv-local torch to expose system 2.4.1..."
+  pip uninstall -y torch 2>&1 | tail -3
+  NEW_VER=$(python -c "import torch; print(torch.__version__)" 2>/dev/null || echo "missing")
+  if [[ ! "$NEW_VER" =~ ^2\.4 ]]; then
+    echo "  system torch also wrong ($NEW_VER) — installing 2.4.1+cu124 from pytorch index"
+    pip install "torch==2.4.1" --index-url https://download.pytorch.org/whl/cu124 2>&1 | tail -3
+  fi
 fi
+echo "  torch=$(python -c 'import torch;print(torch.__version__)')"
 
 MODELING="models/modeling_llama.py"
 if [ ! -f "$MODELING" ]; then
@@ -145,43 +163,57 @@ if [ ! -f "$MODELING" ]; then
 fi
 
 SENTINEL="# patched-for-yarn-16k"
+# Self-heal: if .orig exists but sentinel is missing, the previous patch run
+# bailed mid-way. Restore from .orig and re-apply cleanly.
+if [ -f "$MODELING.orig" ] && ! grep -q "$SENTINEL" "$MODELING"; then
+  echo "  recovering from half-patched state (restoring .orig)"
+  cp "$MODELING.orig" "$MODELING"
+fi
+
 if grep -q "$SENTINEL" "$MODELING"; then
   echo "  patches already applied (sentinel found)"
 else
   cp "$MODELING" "$MODELING.orig"
 
-  # (a) max_position 131072 -> 16384  (catches `max_position_embeddings=131072`
-  #     and `max_position_embeddings = 131072` and JSON-style "max_position_embeddings": 131072)
-  sed -i -E 's/(max_position_embeddings[[:space:]]*[:=][[:space:]]*)131072/\116384/g' "$MODELING"
+  # (a) max_position 131072 -> 16384  (catches `=131072`, `: 131072`, `(131072)`)
+  sed -i -E 's/(max_position_embeddings[[:space:]]*[:=(][[:space:]]*)131072/\116384/g' "$MODELING"
+  sed -i -E 's/=131072([,)])/=16384\1/g' "$MODELING"
 
-  # (b) squeeze cos/sin in apply_rotary_pos_emb. transformers 4.37.2 ships:
-  #         def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
-  #             cos = cos.unsqueeze(unsqueeze_dim)
-  #             sin = sin.unsqueeze(unsqueeze_dim)
-  #     If TriForce calls it with already-unsqueezed cos/sin, the extra unsqueeze
-  #     breaks the broadcast. Idempotent fix: collapse any leading length-1 dims
-  #     before the unsqueeze.
+  # (b) squeeze cos/sin BEFORE the apply_rotary_pos_emb call. transformers 4.37.2
+  #     internally does `cos = cos.unsqueeze(unsqueeze_dim)`. If TriForce passes
+  #     cos/sin with extra leading length-1 dims, the broadcast breaks. TriForce
+  #     imports apply_rotary_pos_emb from transformers, so we patch the call
+  #     site here instead of the (vendored) function definition.
   python - <<PY
-import re, pathlib
+import pathlib
 p = pathlib.Path("$MODELING")
 src = p.read_text()
-needle = "def apply_rotary_pos_emb("
-i = src.find(needle)
-if i == -1:
-    raise SystemExit("could not locate apply_rotary_pos_emb in $MODELING")
-# find first 'cos = cos.unsqueeze' inside that function
-j = src.find("cos = cos.unsqueeze", i)
-if j == -1:
-    raise SystemExit("expected 'cos = cos.unsqueeze' inside apply_rotary_pos_emb")
-# inject squeeze lines right before that
-indent = "    "
-inject = (f"{indent}while cos.dim() > 2:\n"
-          f"{indent}    cos = cos.squeeze(0)\n"
-          f"{indent}while sin.dim() > 2:\n"
-          f"{indent}    sin = sin.squeeze(0)\n")
-src = src[:j] + inject + src[j:]
+needle = "cos, sin = self.rotary_emb"
+sites = []
+off = 0
+while True:
+    j = src.find(needle, off)
+    if j == -1:
+        break
+    sites.append(j)
+    off = j + 1
+if not sites:
+    raise SystemExit("could not locate any 'cos, sin = self.rotary_emb' call site")
+
+# Walk back-to-front so earlier offsets stay valid.
+for j in reversed(sites):
+    eol = src.find("\\n", j)
+    line_start = src.rfind("\\n", 0, j) + 1
+    indent = ""
+    k = line_start
+    while k < len(src) and src[k] in " \\t":
+        indent += src[k]; k += 1
+    inject = ("\\n" + indent + "while cos.dim() > 2: cos = cos.squeeze(0)"
+              + "\\n" + indent + "while sin.dim() > 2: sin = sin.squeeze(0)")
+    src = src[:eol] + inject + src[eol:]
+
 p.write_text(src)
-print("  injected cos/sin squeeze guard")
+print(f"  injected cos/sin squeeze at {len(sites)} call site(s)")
 PY
 
   echo "$SENTINEL" >> "$MODELING"
@@ -191,6 +223,11 @@ fi
 # (c) data/dataset.py: make `lwm` respect `datalen` and add `longbench_packed_qmsum`
 DATASET_PY="data/dataset.py"
 DS_SENTINEL="# patched-for-tinydraft-eval"
+# Self-heal: restore from .orig if previous patch run bailed mid-way
+if [ -f "$DATASET_PY.orig" ] && ! grep -q "$DS_SENTINEL" "$DATASET_PY"; then
+  echo "  recovering from half-patched $DATASET_PY (restoring .orig)"
+  cp "$DATASET_PY.orig" "$DATASET_PY"
+fi
 if [ -f "$DATASET_PY" ] && ! grep -q "$DS_SENTINEL" "$DATASET_PY"; then
   cp "$DATASET_PY" "$DATASET_PY.orig"
   python - <<PY
