@@ -222,10 +222,12 @@ fi
 
 # (c) data/dataset.py: make `lwm` respect `datalen` and add `longbench_packed_qmsum`
 DATASET_PY="data/dataset.py"
-# v2 sentinel: bumped after v1 wrote a corrupted file due to bash heredoc
-# eating backslash escapes in '\n'. Old files with the v1 sentinel will not
-# match here, so self-heal kicks in and re-patches with the quoted heredoc.
-DS_SENTINEL="# patched-for-tinydraft-eval-v2"
+# v3 sentinel: v2 fixed the bash heredoc issue but the injected longbench
+# branch did `import zipfile, os, json` inside the function, shadowing the
+# module-level `os` and causing UnboundLocalError in the older gs branch
+# (which calls os.listdir before our inner import line is reached). v3
+# removes the inner os/json shadowing.
+DS_SENTINEL="# patched-for-tinydraft-eval-v3"
 # Self-heal: restore from .orig if previous patch run bailed mid-way
 if [ -f "$DATASET_PY.orig" ] && ! grep -q "$DS_SENTINEL" "$DATASET_PY"; then
   echo "  recovering from half-patched $DATASET_PY (restoring .orig)"
@@ -289,12 +291,16 @@ src = src[:m.start()] + new_lwm + src[m.end()+1:]
 # 2) Add a longbench_packed_qmsum branch right before the final `else:`
 new_lb = '''    elif dataset_name == 'longbench_packed_qmsum':
         # patched: TinyDraft-parity QMSum loader
+        # NOTE: os/json are imported at module top; do NOT re-import inside
+        # this function or Python will treat them as locals across all branches
+        # (UnboundLocalError when `gs` calls os.listdir before we reach an
+        # inner `import os` line).
         prefill = datalen if datalen else 4096
         try:
             ds = load_dataset("THUDM/LongBench", "qmsum", split="test")
         except Exception:
             from huggingface_hub import hf_hub_download
-            import zipfile, os, json as _json
+            import zipfile
             zp = hf_hub_download(repo_id="THUDM/LongBench", filename="data.zip", repo_type="dataset")
             ed = os.path.join(os.path.dirname(zp), "longbench_extracted")
             if not os.path.exists(os.path.join(ed, "qmsum.jsonl")):
@@ -305,7 +311,7 @@ new_lb = '''    elif dataset_name == 'longbench_packed_qmsum':
                 for fn in fs:
                     if fn == "qmsum.jsonl":
                         qp = os.path.join(r, fn); break
-            ds = [_json.loads(l) for l in open(qp)]
+            ds = [json.loads(l) for l in open(qp)]
         tokenized_prompts = []
         for item in ds:
             if len(tokenized_prompts) >= 20:
