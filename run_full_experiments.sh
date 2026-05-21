@@ -62,9 +62,16 @@ WARMUP="${WARMUP:-1}"
 # run_eval <output_csv> <ckpt> <dataset> <ctx_mode> <maxlen_arg> <gamma>
 run_eval () {
   local out="$1" ckpt="$2" ds="$3" mode="$4" maxlen="$5" gamma="$6"
-  if [ -f "$out" ]; then
-    echo "  [skip] $out exists"
+  local samples_out="${out%.csv}_samples.csv"
+  # Skip only if BOTH aggregate AND per-sample CSV already exist.
+  # Older runs (pre commit 080b464) emitted only the aggregate; for error-bar
+  # analysis we need the per-sample companion too — re-run those.
+  if [ -f "$out" ] && [ -f "$samples_out" ]; then
+    echo "  [skip] $out + $samples_out both exist"
     return 0
+  fi
+  if [ -f "$out" ] && [ ! -f "$samples_out" ]; then
+    echo "  [redo] $out exists but no $samples_out — re-running for per-sample data"
   fi
   # $maxlen is intentionally unquoted: empty string -> no arg, "--max_length N" -> two args.
   # shellcheck disable=SC2086
