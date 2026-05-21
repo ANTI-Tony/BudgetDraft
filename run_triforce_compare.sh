@@ -344,14 +344,20 @@ fi
 banner "3/4  run 7 combos"
 
 # (ctx_label, prefill, budget, draft, chunk, dataset)
+# Using TriForce's default budget=4096, draft=256, chunk=8 across all combos.
+# This matches the previously-validated gs 8K (73.3%/1.41x) and gs 16K (71.8%/
+# 1.38x) runs and avoids the spec-graph-cache overflow that occurs when
+# budget < gen_len (256). At 4K, budget=4096 > prefill=3800 → TriForce
+# effectively runs with full target KV cache (no on-chip sparsity); this is
+# TriForce's degenerate case but still a fair upper-bound baseline.
 COMBOS=(
-  "4k  3800  128 128 1 gs"
-  "4k  3800  128 128 1 longbench_packed_qmsum"
-  "4k  3800  128 128 1 lwm"
-  "8k  8064  264 128 1 longbench_packed_qmsum"
-  "8k  8064  264 128 1 lwm"
-  "16k 16128 512 128 2 longbench_packed_qmsum"
-  "16k 16128 512 128 2 lwm"
+  "4k  3800  4096 256 8 gs"
+  "4k  3800  4096 256 8 longbench_packed_qmsum"
+  "4k  3800  4096 256 8 lwm"
+  "8k  8064  4096 256 8 longbench_packed_qmsum"
+  "8k  8064  4096 256 8 lwm"
+  "16k 16128 4096 256 8 longbench_packed_qmsum"
+  "16k 16128 4096 256 8 lwm"
 )
 
 SUMMARY="$RESULTS_DIR/summary.csv"
