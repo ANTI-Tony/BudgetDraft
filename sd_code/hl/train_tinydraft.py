@@ -324,6 +324,9 @@ def main():
                         help="RoPE scaling type")
     parser.add_argument("--full_cache_only", action="store_true",
                         help="Disable sparse training (L_A only, no L_C)")
+    parser.add_argument("--fixed_budget", type=int, default=None,
+                        help="If set, skip multi-view sampling and train with this "
+                             "single sparse budget (ablation for multi-view necessity)")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -342,6 +345,9 @@ def main():
     if args.full_cache_only:
         print(f"Loss:       L = L_A only (full cache, no sparse training)")
         print(f"Budgets:    full cache (budget={prefix_len})")
+    elif args.fixed_budget is not None:
+        print(f"Loss:       L = L_A + {args.lam} * L_C  (β=0, L_B off, fixed-budget ablation)")
+        print(f"Budgets:    fixed B={args.fixed_budget} (no multi-view sampling)")
     else:
         if args.beta > 0:
             print(f"Loss:       L = L_A + {args.lam} * L_C + {args.beta} * L_B  (hinge top-k, every {args.lb_every_n} steps)")
@@ -452,7 +458,12 @@ def main():
             print(f"  Got sample: {tokens.shape[0]} tokens", flush=True)
 
         input_ids = tokens.unsqueeze(0).to(device)  # [1, seq_len]
-        budget = prefix_len if args.full_cache_only else sample_budget()
+        if args.full_cache_only:
+            budget = prefix_len
+        elif args.fixed_budget is not None:
+            budget = args.fixed_budget
+        else:
+            budget = sample_budget()
 
         # Forward + loss
         optimizer.zero_grad(set_to_none=True)
