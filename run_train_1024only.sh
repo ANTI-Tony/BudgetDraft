@@ -41,7 +41,6 @@ python3 sd_code/hl/train_tinydraft.py \
     --log_interval 10 \
     --save_interval 500 \
     --output_dir "$CKPT_DIR" \
-    --gradient_checkpointing \
     --seed 42
 
 # ============ 2/2  Eval 3 ds × 3 ctx × γ=5 across 4 budgets ============
