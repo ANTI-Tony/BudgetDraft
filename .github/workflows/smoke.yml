@@ -1,0 +1,58 @@
+name: smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sd_code/**'
+      - 'scripts/**'
+      - 'Makefile'
+      - 'requirements.txt'
+      - '.github/workflows/smoke.yml'
+  pull_request:
+    branches: [main]
+
+# Lightweight CI: just checks Python parses + scripts have valid shell syntax.
+# No GPU available on GitHub free runners, so no actual eval runs.
+jobs:
+  static-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Python AST check (no imports needed)
+        run: |
+          set -eo pipefail
+          fail=0
+          for f in $(find sd_code -name "*.py"); do
+            if ! python3 -m py_compile "$f" 2>/dev/null; then
+              echo "AST FAIL: $f"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "✓ all Python files parse"
+
+      - name: Shell syntax check (bash -n) on top-level + scripts/
+        run: |
+          set -eo pipefail
+          fail=0
+          for f in $(find . -maxdepth 3 -name "*.sh" -not -path "./scripts/legacy/*"); do
+            if ! bash -n "$f"; then
+              echo "BASH SYNTAX FAIL: $f"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "✓ all active shell scripts pass bash -n"
+
+      - name: README + EXPECTED_RESULTS present
+        run: |
+          test -f README.md && wc -l README.md
+          test -f EXPECTED_RESULTS.md && wc -l EXPECTED_RESULTS.md
+          test -f Makefile && grep -E '^(check|smoke|train|eval|triforce):' Makefile

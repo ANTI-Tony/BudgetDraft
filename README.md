@@ -233,28 +233,50 @@ After running `run_full_experiments.sh`, compute these from `results/full/main/e
 ## 7. File map
 
 ```
-sd_code/hl/
-├── train_tinydraft.py       # main training script (supports --fixed_budget, --full_cache_only)
-├── eval_tinydraft.py        # evaluation; emits aggregate + _samples.csv pair
-├── data_loader.py           # GS / LongBench / LWM dataset loaders
-├── AR.py                    # standard autoregressive baseline
-├── SD.py                    # standard SD (sparse/full) baseline
-├── speculative/             # speculative decoding implementation + sparse cache
-└── llama/                   # modified llama modeling utilities (RoPE handling)
-
-# Reproduction shell scripts (top-level)
-run_train_phase_a.sh              # train A+0.5C (paper main ckpt)
-run_train_phase_a_only.sh         # ablation: L_A only
-run_train_phase_abc.sh            # ablation: L_A + 1.0·L_C (λ=1)
-run_train_1024only.sh             # ablation: L_A + 0.5·L_C, fixed B=1024
-run_full_experiments.sh           # main + ablation + lambda evaluation (96 configs)
-run_triforce_compare.sh           # TriForce baseline (separate venv, 7 combos)
-
-# Data
-data/
-├── pg19_test.jsonl                # local copy of PG-19 test split (used by GS)
-└── validation-00000-of-00001.jsonl  # Dolly validation (used by short-context tests)
+.
+├── README.md                       # this file
+├── EXPECTED_RESULTS.md             # paper headline numbers + sanity checks
+├── Makefile                        # 1-command targets: make check / smoke / train / eval / triforce
+├── requirements.txt                # pinned deps for BudgetDraft training+eval
+│
+├── sd_code/hl/
+│   ├── train_tinydraft.py          # main training (supports --fixed_budget, --full_cache_only)
+│   ├── eval_tinydraft.py           # eval; emits aggregate + _samples.csv pair
+│   ├── data_loader.py              # GS / LongBench / LWM dataset loaders
+│   ├── AR.py                       # standard autoregressive baseline
+│   ├── SD.py                       # standard SD (sparse/full) baseline
+│   ├── speculative/                # speculative decoding + sparse cache
+│   └── llama/                      # modified llama utilities (RoPE handling)
+│
+├── data/
+│   ├── pg19_test.jsonl             # local PG-19 test split (used by GS)
+│   └── validation-00000-of-00001.jsonl  # Dolly validation
+│
+├── scripts/
+│   ├── check_env.sh                # `make check` — verify env versions + paths
+│   └── legacy/                     # 38 older one-off scripts kept for reference,
+│                                   # NOT needed to reproduce paper results
+│
+└── (top-level shell scripts — paper-active only):
+    run_train_phase_a.sh            # train A+0.5C (paper main ckpt)
+    run_train_phase_a_only.sh       # ablation: L_A only
+    run_train_phase_abc.sh          # ablation: L_A + 1.0·L_C (λ=1)
+    run_train_1024only.sh           # ablation: L_A + 0.5·L_C, fixed B=1024
+    run_full_experiments.sh         # main + ablation + lambda evaluation (96 configs)
+    run_triforce_compare.sh         # TriForce baseline (own venv, 7 combos)
 ```
+
+### One-command workflow
+
+```bash
+make check    # verify environment (no GPU needed)
+make smoke    # 5-min functional test (needs GPU + ~14 GB HF cache)
+make train    # 5 h — train A+0.5C main checkpoint
+make eval     # 5.5 h — produces 96 configs under results/full/
+make triforce # 1.5 h — TriForce baseline (separate venv)
+```
+
+`make all` chains train → eval → triforce serially.
 
 ---
 
