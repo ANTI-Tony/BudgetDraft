@@ -1,19 +1,24 @@
-# TriForce dependencies — pinned versions matching official repo
-# Paper: arXiv:2404.11912
+# BudgetDraft training & evaluation environment.
+# These pins are verified working on Linux x86_64 with CUDA 12.4 + Python 3.10/3.11.
+# DO NOT mix with TriForce baseline — use a separate venv for that.
+# See README §2 for full setup notes.
 
-transformers==4.37.2
-torch==2.2.1
-accelerate==0.27.2
+torch==2.4.1
+transformers==4.44.2
 datasets==2.18.0
+accelerate>=0.27
 sentencepiece
 protobuf
-huggingface_hub==0.21.4
-safetensors==0.4.2
-termcolor==2.4.0
-tqdm==4.66.2
-numpy==1.26.4
-packaging
-ninja
+huggingface_hub>=0.21
+safetensors
+termcolor
+tqdm
+numpy<2
 
-# flash-attn must be installed separately:
-#   pip install flash-attn==2.5.7 --no-build-isolation
+# flash-attn must be installed separately (matches CUDA toolchain):
+#   pip install flash-attn --no-build-isolation
+
+# ---- TriForce baseline (do NOT install in the BudgetDraft env) ----
+# TriForce pins transformers==4.37.2 and torch==2.2.1, incompatible with the
+# BudgetDraft training/eval code. Use a separate venv. run_triforce_compare.sh
+# creates and manages it automatically.
