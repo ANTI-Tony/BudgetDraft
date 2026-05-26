@@ -12,7 +12,7 @@
 #
 # Override checkpoint path via env: CKPT_DIR=/path make train
 
-.PHONY: check smoke train ablation eval triforce all clean-results help
+.PHONY: check smoke train ablation eval eval-from-release triforce all clean-results help
 
 CKPT_DIR ?= /workspace/tf/checkpoints/tinydraft_phase_a_16k
 RESULTS_DIR ?= results/full
@@ -47,6 +47,12 @@ ablation:
 
 eval:
 	./run_full_experiments.sh
+
+# Evaluation-only path for users who downloaded the released checkpoints
+# instead of re-training. Pass CHECKPOINTS=/path/to/dir
+eval-from-release:
+	@test -n "$(CHECKPOINTS)" || (echo "usage: make eval-from-release CHECKPOINTS=/path/to/dir"; exit 1)
+	bash scripts/eval_from_release.sh "$(CHECKPOINTS)"
 
 triforce:
 	./run_triforce_compare.sh

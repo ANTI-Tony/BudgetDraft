@@ -164,7 +164,37 @@ Resume-safe: any config with both `eval_*.csv` and `eval_*_samples.csv` is skipp
 7 combos at TriForce defaults (budget=2048 for 4K, 4096 for 8K/16K, chunk=8, draft=256).
 Output: `/workspace/tf/triforce-reproduce/results/triforce_compare/summary.csv`
 
-### 4.6 Optional: extend γ sweep at 4K (paper Figure 3 main view)
+### 4.6 Validate without re-training (download released checkpoints)
+
+If you do not need to verify training (just want to confirm the paper's eval numbers), download the 4 released checkpoints and run eval directly. This skips ~20 h of training and finishes in ~6 h.
+
+**Expected download layout** — place the 4 directories side by side anywhere:
+
+```
+<your_ckpt_dir>/
+├── tinydraft_phase_a_16k/final/    (A+0.5C, main paper ckpt)
+├── tinydraft_aonly/final/          (A-only ablation)
+├── tinydraft_ac/final/             (A+C, λ=1 ablation)
+└── tinydraft_1024only/final/       (fixed-budget B=1024 ablation)
+```
+
+Each `final/` directory is a standard HuggingFace checkpoint (`config.json` + weights + tokenizer). Total ~1.1 GB.
+
+**One-command eval:**
+
+```bash
+make eval-from-release CHECKPOINTS=/path/to/your_ckpt_dir
+# or directly:
+bash scripts/eval_from_release.sh /path/to/your_ckpt_dir
+```
+
+This runs both phases:
+1. `run_full_experiments.sh` — 96 configs (main + A-only + A+C)
+2. inline loop — 9 configs (1024-only)
+
+Output ends up in `results/full/main/` and `results/full/main_1024only/`. Compare against `EXPECTED_RESULTS.md`.
+
+### 4.7 Optional: extend γ sweep at 4K (paper Figure 3 main view)
 
 Default `GAMMAS_4K` covers γ=5..60. To extend to γ=80 like paper Figure 3:
 
