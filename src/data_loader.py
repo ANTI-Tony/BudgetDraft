@@ -7,12 +7,6 @@ All prompts truncated to max_length tokens.
 import json
 import os
 
-# Ensure datasets cache goes to Volume Disk if available
-_vol_cache = "/workspace/tf/hf_cache/datasets"
-if os.path.isdir("/workspace/tf"):
-    os.makedirs(_vol_cache, exist_ok=True)
-    os.environ.setdefault("HF_DATASETS_CACHE", _vol_cache)
-
 from datasets import load_dataset
 from tqdm import tqdm
 
@@ -25,8 +19,6 @@ def load_prompts(dataset_name, tokenizer, max_length=4096, max_samples=20):
         return _load_longbench_qmsum(tokenizer, max_length, max_samples)
     elif dataset_name == 'lwm':
         return _load_narrativeqa(tokenizer, max_length, max_samples)
-    elif dataset_name == 'dolly':
-        return _load_dolly(tokenizer, max_length, max_samples)
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")
 
@@ -152,45 +144,3 @@ def _load_narrativeqa(tokenizer, max_length, max_samples):
     return prompts
 
 
-def _load_dolly(tokenizer, max_length, max_samples):
-    """Dolly validation set from local jsonl file."""
-    # Look for the file in common locations
-    candidates = [
-        os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'validation-00000-of-00001.jsonl'),
-        os.path.expanduser('~/Desktop/validation-00000-of-00001.jsonl'),
-        '/workspace/tf/data/validation-00000-of-00001.jsonl',
-    ]
-    jsonl_path = None
-    for p in candidates:
-        if os.path.exists(p):
-            jsonl_path = p
-            break
-    if jsonl_path is None:
-        raise FileNotFoundError("Dolly validation jsonl not found. Place it in data/ directory.")
-
-    # Collect all texts first
-    all_texts = []
-    with open(jsonl_path, 'r') as f:
-        for line in f:
-            item = json.loads(line)
-            text = item.get('prompt', '')
-            if text:
-                all_texts.append(text)
-
-    # Concatenate texts to build prompts of exactly max_length tokens
-    prompts = []
-    concat_tokens = []
-    text_idx = 0
-    while len(prompts) < max_samples and text_idx < len(all_texts) * 10:
-        t = all_texts[text_idx % len(all_texts)]
-        text_idx += 1
-        toks = tokenizer.encode(t, add_special_tokens=False)
-        concat_tokens.extend(toks)
-
-        while len(concat_tokens) >= max_length and len(prompts) < max_samples:
-            chunk = concat_tokens[:max_length]
-            concat_tokens = concat_tokens[max_length:]
-            prompts.append({'text': '', 'tokens': chunk})
-
-    print(f"[dolly] {len(prompts)} prompts loaded (each padded to {max_length} tokens)")
-    return prompts

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Evaluate TinyDraft: run SD with trained student vs original student.
+Evaluate BudgetDraft: run SD with trained student vs original student.
 Compares acceptance rate & throughput across budgets and datasets.
 """
 
@@ -88,16 +88,16 @@ def run_sd_eval(target, drafter, tokenizer, prompts, gamma, budget, chunk_size,
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate TinyDraft")
+    parser = argparse.ArgumentParser(description="Evaluate BudgetDraft")
     parser.add_argument("--target_model", type=str,
                         default="NousResearch/Yarn-Llama-2-7b-128k")
     parser.add_argument("--original_student", type=str,
                         default="JackFram/llama-68m",
                         help="Original (untrained) student for comparison")
     parser.add_argument("--trained_student", type=str, required=True,
-                        help="Path to trained TinyDraft checkpoint")
+                        help="Path to trained BudgetDraft checkpoint")
     parser.add_argument("--dataset", type=str, default="gs",
-                        choices=["gs", "longbench_packed_qmsum", "lwm", "dolly"])
+                        choices=["gs", "longbench_packed_qmsum", "lwm"])
     parser.add_argument("--context", type=str, default="short",
                         choices=["short", "long"])
     parser.add_argument("--gamma", type=int, default=3)
@@ -124,7 +124,7 @@ def main():
     budgets = [int(b) for b in args.budgets.split(",")]
 
     print("=" * 60)
-    print("  TinyDraft Evaluation")
+    print("  BudgetDraft Evaluation")
     print("=" * 60)
     print(f"Target:           {args.target_model}")
     print(f"Original student: {args.original_student}")
@@ -157,7 +157,7 @@ def main():
 
     for student_label, student_path in [
         ("original", args.original_student),
-        ("tinydraft", args.trained_student),
+        ("budgetdraft", args.trained_student),
     ]:
         print(f"\n{'─'*40}")
         print(f"  Student: {student_label}")
@@ -165,7 +165,7 @@ def main():
 
         # Apply RoPE scaling for trained student at long context
         drafter_kwargs = dict(torch_dtype=torch.float32, device_map=device)
-        if student_label == "tinydraft" and args.rope_scale_factor is not None:
+        if student_label == "budgetdraft" and args.rope_scale_factor is not None:
             from transformers import AutoConfig
             drafter_config = AutoConfig.from_pretrained(student_path)
             original_max_pos = drafter_config.max_position_embeddings

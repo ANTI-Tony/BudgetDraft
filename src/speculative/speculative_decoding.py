@@ -233,7 +233,7 @@ def speculative_generate(
             q = torch.zeros((corrected_gamma, vocabulary_size), device=target.device)
 
         # generate gamma drafts
-        hl = []
+        draft_tokens = []
         current_position = tot_token_nums - 1
 
         for k in range(corrected_gamma):
@@ -259,7 +259,7 @@ def speculative_generate(
                 q[k] = draft_probs
 
             input_ids[0, current_position + 1 + k] = xi
-            hl.append(xi)
+            draft_tokens.append(xi)
 
         drafts_speculated += corrected_gamma
 
@@ -296,7 +296,7 @@ def speculative_generate(
         if use_greedy_sampler:
             target_token_ids = torch.argmax(target_logits, dim=-1)
             for i in range(corrected_gamma):
-                if target_token_ids[0, i] != hl[i]:
+                if target_token_ids[0, i] != draft_tokens[i]:
                     n = i
                     break
                 drafts_accepted += 1

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verify the BudgetDraft training/eval environment.
+# Verify the BudgetDraft evaluation environment.
 # Exit code 0 = ready to reproduce, 1 = something missing or wrong version.
 #
 # Usage: bash scripts/check_env.sh   (or `make check`)
@@ -82,13 +82,7 @@ py_ok=$?
 [ "$py_ok" -eq 0 ] || fail=1
 
 echo
-echo "=== Key checkpoints / data ==="
-for p in \
-  /workspace/tf/checkpoints/tinydraft_phase_a_16k/final \
-  /workspace/tf/hf_cache; do
-  if [ -e "$p" ]; then ok "$p exists"; else warn "$p missing (will be created/downloaded on first run)"; fi
-done
-
+echo "=== Data ==="
 if [ -f data/pg19_test.jsonl ]; then
   ok "data/pg19_test.jsonl present ($(wc -l < data/pg19_test.jsonl) lines)"
 else
@@ -97,10 +91,10 @@ fi
 
 echo
 echo "=== Eval script has per-sample emission? ==="
-if grep -q "_samples.csv" sd_code/hl/eval_tinydraft.py; then
-  ok "eval_tinydraft.py has _samples.csv emission (commit 080b464 or later)"
+if grep -q "_samples.csv" src/eval.py; then
+  ok "src/eval.py has _samples.csv emission (commit 080b464 or later)"
 else
-  err "eval_tinydraft.py is pre-080b464 — error bars won't work. git pull origin main"
+  err "src/eval.py is pre-080b464 — error bars won't work. git pull origin main"
 fi
 
 echo
@@ -108,6 +102,6 @@ if [ "$fail" -eq 0 ]; then
   echo "✅ Environment looks good. Try: make smoke"
   exit 0
 else
-  echo "❌ Environment has issues — see README §2 (env setup) and §8 (troubleshooting)"
+  echo "❌ Environment has issues — see README (env setup + troubleshooting)"
   exit 1
 fi

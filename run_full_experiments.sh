@@ -8,17 +8,19 @@
 #                        8K  : γ ∈ {5,10,15,...,30}   ( 6 values)
 #                        16K : γ ∈ {5,10,15}          ( 3 values)
 #                      Each CSV contains both `original` (untrained 68M) and
-#                      `tinydraft` (trained 68M) rows.
+#                      `budgetdraft` (trained 68M) rows.
 #   2. ABLATION      : A-only ckpt, 3 datasets × 3 contexts, γ=5 fixed.
 #                      Paired with section 1 at γ=5 for A+0.5C vs A-only.
 #   3. λ SENSITIVITY : A+C ckpt,    3 datasets × 3 contexts, γ=5 fixed.
 #                      Paired with section 1 at γ=5 for A+0.5C vs A+C.
 #
 # TriForce comparison is NOT in this script (needs transformers==4.37.2).
-# Run from inside the repo root, on the RunPod box with the GPU.
+# Run from the repo root on a machine with at least one A100-class GPU.
 #
-# Override checkpoint paths via env vars if needed:
-#   CKPT_MAIN=...  CKPT_AONLY=...  CKPT_AC=...  ./run_full_experiments.sh
+# Checkpoint paths must be provided via env vars (no defaults — point them at
+# the directory where you downloaded the released checkpoints):
+#   CKPT_MAIN=/path/to/main CKPT_AONLY=/path/to/aonly CKPT_AC=/path/to/ac \
+#     ./run_full_experiments.sh
 #
 # Resume-safe: any CSV that already exists is skipped.
 
@@ -26,13 +28,13 @@ set -euo pipefail
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # ---- paths -----------------------------------------------------------------
-CKPT_MAIN="${CKPT_MAIN:-/workspace/tf/checkpoints/tinydraft_phase_a_16k/final}"   # A+0.5C (primary)
-CKPT_AONLY="${CKPT_AONLY:-/workspace/tf/checkpoints/tinydraft_aonly/final}"        # A-only
-CKPT_AC="${CKPT_AC:-/workspace/tf/checkpoints/tinydraft_ac/final}"                 # A+C (λ=1.0)
+: "${CKPT_MAIN:?CKPT_MAIN must point at the A+0.5C checkpoint dir}"     # A+0.5C (primary)
+: "${CKPT_AONLY:?CKPT_AONLY must point at the A-only checkpoint dir}"    # A-only
+: "${CKPT_AC:?CKPT_AC must point at the A+C (lambda=1.0) checkpoint dir}" # A+C
 
 TARGET="NousResearch/Yarn-Llama-2-7b-128k"
 ORIGINAL="JackFram/llama-68m"
-EVAL_PY="sd_code/hl/eval_tinydraft.py"
+EVAL_PY="src/eval.py"
 
 RESULTS_ROOT="results/full"
 mkdir -p "$RESULTS_ROOT/main" "$RESULTS_ROOT/ablation_a_only" "$RESULTS_ROOT/lambda_ac"
@@ -52,7 +54,7 @@ GAMMAS_16K=(); for g in $(seq 5 5  40); do GAMMAS_16K+=("$g"); done
 
 # context configs: index 0=4K, 1=8K, 2=16K
 CTX_LABELS=(4k 8k 16k)
-CTX_MODES=(short long long)            # eval_tinydraft.py: short ≈ 4K, long needs --max_length
+CTX_MODES=(short long long)            # src/eval.py: short ≈ 4K, long needs --max_length
 CTX_MAXLEN_ARGS=("" "--max_length 8192" "--max_length 16384")
 
 MAX_SAMPLES="${MAX_SAMPLES:-10}"

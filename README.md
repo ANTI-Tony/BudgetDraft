@@ -1,12 +1,14 @@
-# BudgetDraft — Reproduction Guide
+# BudgetDraft — Evaluation Code & Reproduction Guide
 
-Reproduce the BudgetDraft paper (acceptance-aware multi-view sparse training for speculative decoding).
+Evaluation code for the paper **"BudgetDraft: Acceptance-Aware Multi-View Training for Sparse-KV Speculative Decoding"**.
 
-This repo includes:
-- **Training code** for BudgetDraft and its ablations (A-only, A+0.5C, A+C, fixed-budget)
+This repository ships:
 - **Evaluation code** that emits both aggregate and per-sample CSV (for error bars)
-- **Baseline code** for AR, SD(sparse/full), TriForce, EAGLE-3
-- **All experiment shell scripts** used in the paper
+- **Baseline code** for AR (autoregressive) and SD (sparse / full KV)
+- **TriForce baseline** wrapper (auto-clones and patches upstream)
+- **All experiment shell scripts** used to produce the paper's tables and figures
+
+Reproduction uses **released checkpoints** (request access via the paper's contact address). Training code is not included in this release.
 
 Designed to run on a single **NVIDIA A100 80GB GPU**.
 
@@ -16,11 +18,10 @@ Designed to run on a single **NVIDIA A100 80GB GPU**.
 
 | Job | GPU mem | Wall-clock |
 |---|---|---|
-| Main checkpoint training (`run_train_phase_a.sh`, 5000 steps) | ~32 GB | ~5 h |
 | Full evaluation (78 main + 9 ablation + 9 lambda configs) | ~22 GB | ~5.5 h |
 | TriForce baseline (7 combos) | ~22 GB | ~1.5 h |
 
-A100 80GB is the reference. Smaller GPUs (e.g. A100 40GB, H100 80GB) should work for evaluation; training at `seq_len=16384` needs ≥40 GB.
+A100 80GB is the reference. Smaller GPUs (A100 40GB, H100 80GB) should also work for evaluation.
 
 ---
 
@@ -32,19 +33,12 @@ A100 80GB is the reference. Smaller GPUs (e.g. A100 40GB, H100 80GB) should work
 - Python 3.10 or 3.11
 - ~50 GB free disk for HuggingFace cache (YaRN-Llama-2-7B-128K weights ~14 GB + datasets)
 
-### 2.2 BudgetDraft training & evaluation (transformers 4.44.2)
+### 2.2 BudgetDraft evaluation (transformers 4.44.2)
 
 ```bash
-# Pinned versions — verified working
-pip install \
-  "torch==2.4.1" \
-  "transformers==4.44.2" \
-  "datasets==2.18.0" \
-  "accelerate>=0.27" \
-  "sentencepiece" "protobuf" "huggingface_hub" \
-  "termcolor" "tqdm" "numpy<2"
+pip install -r requirements.txt
 
-# (optional, for faster training) flash-attn matching the torch wheel
+# optional, for faster inference
 pip install flash-attn --no-build-isolation
 ```
 
@@ -55,50 +49,46 @@ pip install flash-attn --no-build-isolation
 
 ### 2.3 TriForce baseline (separate env recommended)
 
-TriForce pins `transformers==4.37.2` which is incompatible with the BudgetDraft eval. Use a separate venv:
-
-```bash
-python -m venv --system-site-packages /workspace/tf/triforce_venv
-source /workspace/tf/triforce_venv/bin/activate
-pip install "transformers==4.37.2" "datasets==2.18.0" termcolor protobuf accelerate sentencepiece huggingface_hub tqdm
-```
-
-`run_triforce_compare.sh` handles this automatically (creates the venv, patches TriForce's `modeling_llama.py` and `data/dataset.py`).
+TriForce pins `transformers==4.37.2` which is incompatible with the BudgetDraft eval. `run_triforce_compare.sh` creates a dedicated venv (default `$PWD/triforce_venv`) and patches TriForce's `modeling_llama.py` and `data/dataset.py` automatically.
 
 ---
 
 ## 3. Datasets
 
-Three datasets, automatically downloaded via HuggingFace `datasets` on first use (cached under `$HF_HOME`):
+Three datasets, auto-downloaded via HuggingFace `datasets` on first use:
 
-| Dataset | HF repo | Used as | Local fallback |
-|---|---|---|---|
-| GS (PG-19) | `pg19` (script) | training + eval | `data/pg19_test.jsonl` (included) |
-| LongBench QMSum | `THUDM/LongBench` | eval | downloads `data.zip` and extracts `qmsum.jsonl` |
-| LWM (NarrativeQA) | `deepmind/narrativeqa` | eval | streamed |
+| Dataset | HF repo | Local fallback |
+|---|---|---|
+| GS (PG-19) | `pg19` (script) | `data/pg19_test.jsonl` (included) |
+| LongBench QMSum | `THUDM/LongBench` | downloads `data.zip` and extracts `qmsum.jsonl` |
+| LWM (NarrativeQA) | `deepmind/narrativeqa` | streamed (20 fixed indices) |
 
 Set `HF_HOME` if you want them in a specific location:
 
 ```bash
-export HF_HOME=/workspace/tf/hf_cache
-export TRANSFORMERS_CACHE=/workspace/tf/hf_cache
+export HF_HOME=$HOME/.cache/huggingface
 ```
 
 Models downloaded on first use:
 - `NousResearch/Yarn-Llama-2-7b-128k` (~14 GB, fp16, verifier)
-- `JackFram/llama-68m` (~270 MB, fp32, untrained drafter)
+- `JackFram/llama-68m` (~270 MB, fp32, untrained drafter — used as the "original" baseline row)
 
 ---
 
 ## 4. Reproduction steps
 
-### 4.1 Quick smoke test (5 minutes, no training)
+### 4.1 Quick smoke test (~5 minutes)
 
-Verifies the eval pipeline works end-to-end:
+Verifies the eval pipeline works end-to-end on the untrained drafter:
 
 ```bash
-cd sd_code/hl
-python3 eval_tinydraft.py \
+make smoke
+```
+
+Or directly:
+
+```bash
+python3 src/eval.py \
   --target_model NousResearch/Yarn-Llama-2-7b-128k \
   --original_student JackFram/llama-68m \
   --trained_student JackFram/llama-68m \
@@ -109,73 +99,16 @@ python3 eval_tinydraft.py \
 
 Expect: two CSV files (`/tmp/smoke.csv` aggregate + `/tmp/smoke_samples.csv` per-sample), no errors.
 
-### 4.2 Train BudgetDraft (main checkpoint)
+### 4.2 Full evaluation from released checkpoints
 
-```bash
-# A+0.5C with multi-view budget sampling — the headline checkpoint
-./run_train_phase_a.sh
-```
-
-Output: `/workspace/tf/checkpoints/tinydraft_phase_a_16k/final/`
-
-Details:
-- 5000 steps, AdamW lr=1e-5, cosine schedule
-- seq_len=16384, prefix=16128, continuation=256
-- Random budget sampling from {256, 512, 1024, 2048} with weights {0.4, 0.3, 0.2, 0.1}
-- λ=0.5 (L = L_A + 0.5·L_C)
-
-### 4.3 Train ablation checkpoints
-
-```bash
-./run_train_phase_a_only.sh   # L_A only (no sparse-cache branch)
-./run_train_1024only.sh        # L_A + 0.5·L_C with fixed B=1024 (no multi-view)
-./run_train_phase_abc.sh       # L_A + L_C  (λ=1.0)
-```
-
-### 4.4 Full evaluation
-
-After training completes:
-
-```bash
-# Main + ablation + lambda — 96 configs total
-./run_full_experiments.sh
-```
-
-Output structure:
-
-```
-results/full/
-├── main/                       # 78 configs, A+0.5C ckpt
-│   ├── eval_4k_gs_g5.csv       # aggregate (one row per student × budget)
-│   ├── eval_4k_gs_g5_samples.csv   # per-sample (for error bars)
-│   └── ...                     # γ ∈ {5..60 for 4K, 5..30 for 8K, 5..40 for 16K}
-├── ablation_a_only/   (9 configs, γ=5, A-only ckpt)
-└── lambda_ac/          (9 configs, γ=5, A+C ckpt)
-```
-
-Resume-safe: any config with both `eval_*.csv` and `eval_*_samples.csv` is skipped.
-
-### 4.5 TriForce baseline
-
-```bash
-./run_triforce_compare.sh
-```
-
-7 combos at TriForce defaults (budget=2048 for 4K, 4096 for 8K/16K, chunk=8, draft=256).
-Output: `/workspace/tf/triforce-reproduce/results/triforce_compare/summary.csv`
-
-### 4.6 Validate without re-training (download released checkpoints)
-
-If you do not need to verify training (just want to confirm the paper's eval numbers), download the 4 released checkpoints and run eval directly. This skips ~20 h of training and finishes in ~6 h.
-
-**Expected download layout** — place the 4 directories side by side anywhere:
+Place the released checkpoints in a directory with this layout:
 
 ```
 <your_ckpt_dir>/
-├── tinydraft_phase_a_16k/final/    (A+0.5C, main paper ckpt)
-├── tinydraft_aonly/final/          (A-only ablation)
-├── tinydraft_ac/final/             (A+C, λ=1 ablation)
-└── tinydraft_1024only/final/       (fixed-budget B=1024 ablation)
+├── main/final/         (A+0.5C — paper's main checkpoint)
+├── aonly/final/        (A-only ablation)
+├── ac/final/           (A+C, lambda=1 ablation)
+└── budget1024/final/   (fixed-budget B=1024 ablation, optional)
 ```
 
 Each `final/` directory is a standard HuggingFace checkpoint (`config.json` + weights + tokenizer). Total ~1.1 GB.
@@ -190,21 +123,32 @@ bash scripts/eval_from_release.sh /path/to/your_ckpt_dir
 
 This runs both phases:
 1. `run_full_experiments.sh` — 96 configs (main + A-only + A+C)
-2. inline loop — 9 configs (1024-only)
+2. inline loop — 9 configs (fixed-budget ablation, only if `budget1024/` is present)
 
 Output ends up in `results/full/main/` and `results/full/main_1024only/`. Compare against `EXPECTED_RESULTS.md`.
 
-### 4.7 Optional: extend γ sweep at 4K (paper Figure 3 main view)
+Resume-safe: any config with both `eval_*.csv` and `eval_*_samples.csv` is skipped.
 
-Default `GAMMAS_4K` covers γ=5..60. To extend to γ=80 like paper Figure 3:
+### 4.3 TriForce baseline
+
+```bash
+./run_triforce_compare.sh
+```
+
+7 combos at TriForce defaults (budget=2048 for 4K, 4096 for 8K/16K, chunk=8, draft=256).
+Output: `$TF_REPO_DIR/results/triforce_compare/summary.csv` (default `$TF_REPO_DIR=$PWD/triforce_baseline`).
+
+### 4.4 Optional: extend γ sweep at 4K (paper Figure 3 main view)
+
+Default `GAMMAS_4K` in `run_full_experiments.sh` covers γ=5..60. To extend to γ=80 like paper Figure 3:
 
 ```bash
 for G in 65 70 75 80; do
   for DS in gs longbench_packed_qmsum lwm; do
-    python3 sd_code/hl/eval_tinydraft.py \
+    python3 src/eval.py \
       --target_model NousResearch/Yarn-Llama-2-7b-128k \
       --original_student JackFram/llama-68m \
-      --trained_student /workspace/tf/checkpoints/tinydraft_phase_a_16k/final \
+      --trained_student "$CKPT_MAIN" \
       --dataset "$DS" --context short \
       --gamma "$G" --budgets "256,512,1024,2048" \
       --max_samples 10 --warmup 1 \
@@ -217,9 +161,7 @@ done
 
 ---
 
-## 5. Hyperparameters (Table reproducer)
-
-For paper Table 1 / Table 3 / Figure 3, the exact settings are:
+## 5. Evaluation hyperparameters
 
 | Setting | Value | Notes |
 |---|---|---|
@@ -229,12 +171,6 @@ For paper Table 1 / Table 3 / Figure 3, the exact settings are:
 | Samples per cell | 10 (1 warmup discarded) | `--max_samples 10 --warmup 1` |
 | Chunk size for sparse cache | 8 | TriForce-style chunked retrieval |
 | Greedy decoding | top-1 verifier match | required for output-identical SD |
-| Training steps | 5000 | AdamW, lr=1e-5, weight_decay=0.01 |
-| Warmup steps | 150 (linear) → cosine to 0 | |
-| Sequence length (training) | 16384 (prefix 16128 + continuation 256) | |
-| Multi-view budget weights | {256: 0.4, 512: 0.3, 1024: 0.2, 2048: 0.1} | |
-| λ (sparse loss weight) | 0.5 | A+0.5C variant |
-| Gradient clip | 1.0 | |
 
 ---
 
@@ -248,7 +184,7 @@ Paper Table 1 (Best BudgetDraft speedup, panel A, B=256) headline numbers — re
 | 8K  | 4.26×/51.76% | 2.13×/20.43% | 4.43×/55.11% |
 | 16K | 1.22×/18.81% | 1.53×/27.78% | 2.10×/34.17% |
 
-AR baselines used (Table 1 — averaged over multiple runs):
+AR baselines (Table 1 — averaged over multiple runs):
 
 | Context | GS | LongBench | LWM |
 |---|---|---|---|
@@ -256,7 +192,7 @@ AR baselines used (Table 1 — averaged over multiple runs):
 | 8K  | 30.40 | 30.10 | 29.51 |
 | 16K | 19.41 | 19.67 | 19.43 |
 
-After running `run_full_experiments.sh`, compute these from `results/full/main/eval_*.csv`.
+After running `run_full_experiments.sh`, compute speedups from `results/full/main/eval_*.csv`. See `EXPECTED_RESULTS.md` for the full sanity-check matrix.
 
 ---
 
@@ -266,59 +202,51 @@ After running `run_full_experiments.sh`, compute these from `results/full/main/e
 .
 ├── README.md                       # this file
 ├── EXPECTED_RESULTS.md             # paper headline numbers + sanity checks
-├── Makefile                        # 1-command targets: make check / smoke / train / eval / triforce
-├── requirements.txt                # pinned deps for BudgetDraft training+eval
+├── Makefile                        # 1-command targets: make check / smoke / eval / triforce
+├── requirements.txt                # pinned deps for evaluation
 │
-├── sd_code/hl/
-│   ├── train_tinydraft.py          # main training (supports --fixed_budget, --full_cache_only)
-│   ├── eval_tinydraft.py           # eval; emits aggregate + _samples.csv pair
+├── src/
+│   ├── eval.py                     # main eval; emits aggregate + _samples.csv pair
 │   ├── data_loader.py              # GS / LongBench / LWM dataset loaders
-│   ├── AR.py                       # standard autoregressive baseline
-│   ├── SD.py                       # standard SD (sparse/full) baseline
+│   ├── AR.py                       # autoregressive baseline
+│   ├── SD.py                       # SD (sparse/full) baseline
 │   ├── speculative/                # speculative decoding + sparse cache
-│   └── llama/                      # modified llama utilities (RoPE handling)
+│   ├── tree/                       # benchmark utilities shared with AR.py
+│   └── llama/                      # llama utilities (RoPE handling)
 │
 ├── data/
-│   ├── pg19_test.jsonl             # local PG-19 test split (used by GS)
-│   └── validation-00000-of-00001.jsonl  # Dolly validation
+│   └── pg19_test.jsonl             # local PG-19 test split (used by GS)
 │
 ├── scripts/
-│   ├── check_env.sh                # `make check` — verify env versions + paths
-│   └── legacy/                     # 38 older one-off scripts kept for reference,
-│                                   # NOT needed to reproduce paper results
+│   ├── check_env.sh                # `make check` — verify env versions
+│   ├── eval_from_release.sh        # orchestrates eval from downloaded checkpoints
+│   ├── prepare_data.py             # offline data prep utilities
+│   ├── clone_triforce.sh           # clones TriForce upstream
+│   ├── download_models.sh          # pre-fetches HF models
+│   └── patch_triforce.sh           # applies TriForce compatibility patches
 │
-└── (top-level shell scripts — paper-active only):
-    run_train_phase_a.sh            # train A+0.5C (paper main ckpt)
-    run_train_phase_a_only.sh       # ablation: L_A only
-    run_train_phase_abc.sh          # ablation: L_A + 1.0·L_C (λ=1)
-    run_train_1024only.sh           # ablation: L_A + 0.5·L_C, fixed B=1024
-    run_full_experiments.sh         # main + ablation + lambda evaluation (96 configs)
+└── run_full_experiments.sh         # main + ablation + lambda evaluation (96 configs)
     run_triforce_compare.sh         # TriForce baseline (own venv, 7 combos)
 ```
 
 ### One-command workflow
 
 ```bash
-make check    # verify environment (no GPU needed)
-make smoke    # 5-min functional test (needs GPU + ~14 GB HF cache)
-make train    # 5 h — train A+0.5C main checkpoint
-make eval     # 5.5 h — produces 96 configs under results/full/
-make triforce # 1.5 h — TriForce baseline (separate venv)
+make check              # verify environment (no GPU needed)
+make smoke              # ~5-min functional test (needs GPU + HF cache)
+make eval-from-release CHECKPOINTS=/path/to/ckpts   # ~6 h — full eval matrix
+make triforce           # ~1.5 h — TriForce baseline (separate venv)
 ```
-
-`make all` chains train → eval → triforce serially.
 
 ---
 
 ## 8. Troubleshooting
 
-**`ModuleNotFoundError: No module named 'transformers'`** after switching pods/envs: re-run the pip install in §2.2. If using virtualenv with `--system-site-packages`, ensure the venv is activated.
+**`ModuleNotFoundError: No module named 'transformers'`**: re-run `pip install -r requirements.txt`. If using virtualenv with `--system-site-packages`, ensure the venv is activated.
 
 **`RuntimeError: Dataset scripts are no longer supported, but found pg19.py`**: your `datasets` is ≥3.0. Downgrade to `datasets==2.18.0`.
 
-**Eval CSV produces 8 rows but no `_samples.csv`**: your `sd_code/hl/eval_tinydraft.py` is the old version (pre-commit `080b464`). `git pull` to get the per-sample emission feature.
-
-**Training fails at first step with `RuntimeError: The expanded size of the tensor ... at non-singleton dimension 3` in attention backward**: gradient checkpointing conflicts with `DynamicCache` mutation in the L_C branch. Remove `--gradient_checkpointing` from your train script (paper's main checkpoint did not use it).
+**Eval CSV produces 8 rows but no `_samples.csv`**: your `src/eval.py` is out of date. Pull the latest revision to get the per-sample emission feature.
 
 **TriForce `topk k=... out of range`**: at 4K context with the default `--budget 4096`, retrieval needs more chunks than the 4K prefill provides. Use `--budget 2048` for 4K (script already does this).
 

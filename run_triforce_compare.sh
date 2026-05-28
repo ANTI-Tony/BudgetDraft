@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_triforce_compare.sh — TriForce 7-combo eval against TinyDraft.
+# run_triforce_compare.sh — TriForce 7-combo eval against BudgetDraft.
 #
 # Combos (gs 8K/16K already done in prior run; this script covers the remaining 7):
 #   4K : gs, longbench (lb), lwm   --prefill 3800   budget=128 draft=128 chunk=1
@@ -8,27 +8,27 @@
 #
 # Assumptions:
 #   - Fresh pod or willing to (re)create a dedicated conda env: triforce_eval
-#   - Clones TriForce upstream into /workspace/tf/triforce-reproduce
+#   - Clones TriForce upstream into $TF_REPO_DIR (default: ./triforce_baseline)
 #   - Patches its modeling_llama.py:
 #       (a) max_position_embeddings 131072 -> 16384
 #       (b) squeeze cos/sin in apply_rotary_pos_emb (transformers 4.37.2 quirk)
 #   - Patches data/dataset.py:
 #       (c) make `lwm` respect args.prefill (upstream hard-codes 127*1024)
-#       (d) add `longbench_packed_qmsum` branch mirroring the TinyDraft loader
+#       (d) add `longbench_packed_qmsum` branch mirroring the BudgetDraft loader
 #   - on_chip.py prints `average acceptance rate (NOT per token): X` (fraction)
 #     and `[E2E Speedup]: Y` — script greps those.
 #
 # Output:
-#   /workspace/tf/triforce-reproduce/results/triforce_compare/
+#   $TF_REPO_DIR/results/triforce_compare/
 #     <ctx>_<ds>.log              raw run logs
 #     summary.csv                 ctx,ds,accept_rate (fraction),speedup,log
 
 set -euo pipefail
 
 # ============== knobs (override via env) =====================================
-TF_REPO_DIR="${TF_REPO_DIR:-/workspace/tf/triforce-reproduce}"
-VENV_DIR="${VENV_DIR:-/workspace/tf/triforce_venv}"
-HF_CACHE="${HF_CACHE:-/workspace/tf/hf_cache}"
+TF_REPO_DIR="${TF_REPO_DIR:-$PWD/triforce_baseline}"
+VENV_DIR="${VENV_DIR:-$PWD/triforce_venv}"
+HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface}"
 RESULTS_DIR="${RESULTS_DIR:-$TF_REPO_DIR/results/triforce_compare}"
 TRIFORCE_GIT="${TRIFORCE_GIT:-https://github.com/Infini-AI-Lab/TriForce.git}"
 GEN_LEN="${GEN_LEN:-256}"
@@ -227,7 +227,7 @@ DATASET_PY="data/dataset.py"
 # module-level `os` and causing UnboundLocalError in the older gs branch
 # (which calls os.listdir before our inner import line is reached). v3
 # removes the inner os/json shadowing.
-DS_SENTINEL="# patched-for-tinydraft-eval-v3"
+DS_SENTINEL="# patched-for-budgetdraft-eval-v3"
 # Self-heal: restore from .orig if previous patch run bailed mid-way
 if [ -f "$DATASET_PY.orig" ] && ! grep -q "$DS_SENTINEL" "$DATASET_PY"; then
   echo "  recovering from half-patched $DATASET_PY (restoring .orig)"
@@ -290,7 +290,7 @@ src = src[:m.start()] + new_lwm + src[m.end()+1:]
 
 # 2) Add a longbench_packed_qmsum branch right before the final `else:`
 new_lb = '''    elif dataset_name == 'longbench_packed_qmsum':
-        # patched: TinyDraft-parity QMSum loader
+        # patched: BudgetDraft-parity QMSum loader
         # NOTE: os/json are imported at module top; do NOT re-import inside
         # this function or Python will treat them as locals across all branches
         # (UnboundLocalError when `gs` calls os.listdir before we reach an

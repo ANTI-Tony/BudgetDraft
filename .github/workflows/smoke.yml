@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'sd_code/**'
+      - 'src/**'
       - 'scripts/**'
       - 'Makefile'
       - 'requirements.txt'
@@ -29,7 +29,7 @@ jobs:
         run: |
           set -eo pipefail
           fail=0
-          for f in $(find sd_code -name "*.py"); do
+          for f in $(find src -name "*.py"); do
             if ! python3 -m py_compile "$f" 2>/dev/null; then
               echo "AST FAIL: $f"
               fail=1
@@ -42,7 +42,7 @@ jobs:
         run: |
           set -eo pipefail
           fail=0
-          for f in $(find . -maxdepth 3 -name "*.sh" -not -path "./scripts/legacy/*"); do
+          for f in $(find . -maxdepth 3 -name "*.sh"); do
             if ! bash -n "$f"; then
               echo "BASH SYNTAX FAIL: $f"
               fail=1

@@ -9,10 +9,10 @@
 #
 # Expected layout of the argument directory:
 #   <ckpt_root>/
-#   ├── tinydraft_phase_a_16k/final/   (A+0.5C — main ckpt)
-#   ├── tinydraft_aonly/final/         (A-only ablation)
-#   ├── tinydraft_ac/final/            (A+C  λ=1 ablation)
-#   └── tinydraft_1024only/final/      (fixed-budget ablation)
+#   ├── main/final/         (A+0.5C — main ckpt)
+#   ├── aonly/final/        (A-only ablation)
+#   ├── ac/final/           (A+C  lambda=1 ablation)
+#   └── budget1024/final/   (fixed-budget ablation, optional)
 #
 # Total wall-clock: ~6 h on A100 80GB.
 
@@ -29,10 +29,10 @@ CKPT_ROOT="$1"
 CKPT_ROOT="$(cd "$CKPT_ROOT" && pwd)"
 
 # ---- locate the 4 ckpts ------------------------------------------------------
-MAIN="$CKPT_ROOT/tinydraft_phase_a_16k/final"
-AONLY="$CKPT_ROOT/tinydraft_aonly/final"
-AC="$CKPT_ROOT/tinydraft_ac/final"
-K1024="$CKPT_ROOT/tinydraft_1024only/final"
+MAIN="$CKPT_ROOT/main/final"
+AONLY="$CKPT_ROOT/aonly/final"
+AC="$CKPT_ROOT/ac/final"
+K1024="$CKPT_ROOT/budget1024/final"
 
 # MAIN / AONLY / AC are required (Table 1 + Table 3 main columns).
 # K1024 is optional (extra ablation table only).
@@ -107,7 +107,7 @@ for i in 0 1 2; do
     fi
     echo "[1024only] ctx=$CTX ds=$DS γ=5"
     # shellcheck disable=SC2086
-    python3 sd_code/hl/eval_tinydraft.py \
+    python3 src/eval.py \
         --target_model "$TARGET" \
         --original_student "$ORIGINAL" \
         --trained_student "$K1024" \
