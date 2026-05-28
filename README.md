@@ -7,9 +7,14 @@ This repository ships:
 - AR (autoregressive) reference and SD (sparse / full KV) entry points
 - All experiment shell scripts used to produce the paper's tables and figures
 
-Reproduction uses **released checkpoints** (request access via the paper's contact address). Training code is not included in this release.
+**Released checkpoints:** <https://huggingface.co/qwe123wjb/BudgetDraft-checkpoints>
 
-Designed to run on a single **NVIDIA A100 80GB GPU**.
+```bash
+hf download qwe123wjb/BudgetDraft-checkpoints --local-dir ./ckpts
+make eval-from-release CHECKPOINTS=./ckpts
+```
+
+Training code is not included in this release. Designed to run on a single **NVIDIA A100 80GB GPU**.
 
 For baseline comparisons referenced in the paper, fetch the upstream implementations directly:
 - TriForce: <https://github.com/Infini-AI-Lab/TriForce>
