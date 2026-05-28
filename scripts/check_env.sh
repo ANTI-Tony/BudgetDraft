@@ -83,11 +83,13 @@ py_ok=$?
 
 echo
 echo "=== Data ==="
-if [ -f data/pg19_test.jsonl ]; then
-  ok "data/pg19_test.jsonl present ($(wc -l < data/pg19_test.jsonl) lines)"
-else
-  warn "data/pg19_test.jsonl missing — will fall back to HF datasets script for PG-19"
-fi
+for f in data/gs.jsonl data/longbench.jsonl data/lwm.jsonl; do
+  if [ -f "$f" ]; then
+    ok "$f present ($(wc -l < "$f") lines)"
+  else
+    warn "$f missing — will fall back to HuggingFace download"
+  fi
+done
 
 echo
 echo "=== Eval script has per-sample emission? ==="

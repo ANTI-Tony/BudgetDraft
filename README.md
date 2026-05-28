@@ -53,15 +53,15 @@ pip install flash-attn --no-build-isolation
 
 ## 3. Datasets
 
-Three datasets, auto-downloaded via HuggingFace `datasets` on first use:
+All three datasets used in the paper are shipped under `data/`. The loader prefers the local jsonl over any HuggingFace download, so evaluation runs offline once the repo is checked out.
 
-| Dataset | HF repo | Local fallback |
-|---|---|---|
-| GS (PG-19) | `pg19` (script) | `data/pg19_test.jsonl` (included) |
-| LongBench QMSum | `THUDM/LongBench` | downloads `data.zip` and extracts `qmsum.jsonl` |
-| LWM (NarrativeQA) | `deepmind/narrativeqa` | streamed (20 fixed indices) |
+| Dataset | Local file | Size | Source |
+|---|---|---|---|
+| GS (PG-19)       | `data/gs.jsonl`        | ~40 MB | PG-19 test split |
+| LongBench QMSum  | `data/longbench.jsonl` | ~12 MB | THUDM/LongBench (`qmsum.jsonl`) |
+| LWM (NarrativeQA)| `data/lwm.jsonl`       | ~19 MB | deepmind/narrativeqa, 20 fixed indices |
 
-Set `HF_HOME` if you want them in a specific location:
+If any local file is missing the loader falls back to a HuggingFace download. Set `HF_HOME` to control where downloads land:
 
 ```bash
 export HF_HOME=$HOME/.cache/huggingface
@@ -204,7 +204,9 @@ After running `run_full_experiments.sh`, compute speedups from `results/full/mai
 │   └── llama/                      # llama utilities (RoPE handling)
 │
 ├── data/
-│   └── pg19_test.jsonl             # local PG-19 test split (used by GS)
+│   ├── gs.jsonl                    # PG-19 test split
+│   ├── longbench.jsonl             # LongBench QMSum
+│   └── lwm.jsonl                   # NarrativeQA, 20 fixed sample indices
 │
 ├── scripts/
 │   ├── check_env.sh                # `make check` — verify env versions

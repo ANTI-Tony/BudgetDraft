@@ -1,7 +1,15 @@
 """
-Dataset loader for SD sparse experiments.
-Supports: gs (PG-19), longbench_packed_qmsum, lwm (NarrativeQA).
-All prompts truncated to max_length tokens.
+Dataset loader for the BudgetDraft evaluation.
+
+Supports the three datasets used in the paper:
+    gs                       — PG-19 long-form books
+    longbench_packed_qmsum   — LongBench / QMSum meeting QA
+    lwm                      — NarrativeQA book summaries (20 fixed indices)
+
+Each loader prefers a local jsonl shipped in ../data/ over a HuggingFace
+download, so evaluation runs offline once the bundle is in place.
+
+Prompts are truncated to max_length tokens.
 """
 
 import json
@@ -23,10 +31,20 @@ def load_prompts(dataset_name, tokenizer, max_length=4096, max_samples=20):
         raise ValueError(f"Unknown dataset: {dataset_name}")
 
 
+def _find_local(name):
+    """Look for `name` in common local layouts (../data/<name> or ../../data/<name>)."""
+    here = os.path.dirname(__file__)
+    for rel in ("../data", "../../data"):
+        p = os.path.abspath(os.path.join(here, rel, name))
+        if os.path.exists(p):
+            return p
+    return None
+
+
 def _load_pg19(tokenizer, max_length, max_samples):
     """PG-19 test set (first max_samples books)."""
-    local_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'pg19_test.jsonl')
-    if os.path.exists(local_path):
+    local_path = _find_local("gs.jsonl") or _find_local("pg19_test.jsonl")
+    if local_path:
         texts = []
         with open(local_path, 'r') as f:
             for i, line in enumerate(f):
@@ -55,32 +73,34 @@ def _load_pg19(tokenizer, max_length, max_samples):
 
 def _load_longbench_qmsum(tokenizer, max_length, max_samples):
     """LongBench QMSum - meeting transcripts."""
-    try:
-        dataset = load_dataset("THUDM/LongBench", "qmsum", split="test")
-    except (RuntimeError, ValueError, FileNotFoundError):
-        # Newer datasets lib doesn't support loading scripts
-        # Download data.zip and extract qmsum.jsonl
-        from huggingface_hub import hf_hub_download
-        import zipfile
-        zip_path = hf_hub_download(repo_id="THUDM/LongBench", filename="data.zip", repo_type="dataset")
-        extract_dir = os.path.join(os.path.dirname(zip_path), "longbench_extracted")
-        if not os.path.exists(os.path.join(extract_dir, "qmsum.jsonl")):
-            with zipfile.ZipFile(zip_path, 'r') as zf:
-                zf.extractall(extract_dir)
-        # Find qmsum.jsonl (might be in a subdirectory)
-        qmsum_path = None
-        for root, dirs, files in os.walk(extract_dir):
-            for f in files:
-                if f == "qmsum.jsonl":
-                    qmsum_path = os.path.join(root, f)
-                    break
-        if qmsum_path is None:
-            raise FileNotFoundError(f"qmsum.jsonl not found in {extract_dir}")
-        data = []
-        with open(qmsum_path, 'r') as f:
-            for line in f:
-                data.append(json.loads(line))
-        dataset = data
+    local_qmsum = _find_local("longbench.jsonl") or _find_local("qmsum.jsonl")
+    if local_qmsum:
+        with open(local_qmsum, 'r') as f:
+            dataset = [json.loads(line) for line in f]
+    else:
+        try:
+            dataset = load_dataset("THUDM/LongBench", "qmsum", split="test")
+        except (RuntimeError, ValueError, FileNotFoundError):
+            from huggingface_hub import hf_hub_download
+            import zipfile
+            zip_path = hf_hub_download(repo_id="THUDM/LongBench", filename="data.zip", repo_type="dataset")
+            extract_dir = os.path.join(os.path.dirname(zip_path), "longbench_extracted")
+            if not os.path.exists(os.path.join(extract_dir, "qmsum.jsonl")):
+                with zipfile.ZipFile(zip_path, 'r') as zf:
+                    zf.extractall(extract_dir)
+            qmsum_path = None
+            for root, dirs, files in os.walk(extract_dir):
+                for f in files:
+                    if f == "qmsum.jsonl":
+                        qmsum_path = os.path.join(root, f)
+                        break
+            if qmsum_path is None:
+                raise FileNotFoundError(f"qmsum.jsonl not found in {extract_dir}")
+            data = []
+            with open(qmsum_path, 'r') as f:
+                for line in f:
+                    data.append(json.loads(line))
+            dataset = data
 
     prompts = []
     for item in tqdm(dataset, desc="Tokenizing QMSum"):
@@ -98,24 +118,30 @@ def _load_longbench_qmsum(tokenizer, max_length, max_samples):
 
 
 def _load_narrativeqa(tokenizer, max_length, max_samples):
-    """NarrativeQA - book summarization. Uses streaming to avoid full download."""
+    """NarrativeQA - book summarization. Prefers a local pre-extracted jsonl
+    of just the 20 sample indices used; falls back to HF streaming."""
     idx_set = {0, 50, 300, 800, 950, 1100, 2150, 2450, 2550, 2750,
                3350, 3400, 3600, 3900, 4000, 4100, 4200, 4400, 4500, 4550}
     max_idx = max(idx_set)
 
-    # Use streaming to avoid downloading the entire dataset
-    try:
-        stream = load_dataset("deepmind/narrativeqa", split="train", streaming=True)
-    except Exception:
-        stream = load_dataset("narrativeqa", split="train", streaming=True)
-
-    # Collect items at target indices
-    collected = {}
-    for i, item in enumerate(tqdm(stream, desc="Streaming NarrativeQA", total=max_idx + 1)):
-        if i in idx_set:
-            collected[i] = item
-        if i > max_idx:
-            break
+    local_lwm = _find_local("lwm.jsonl") or _find_local("narrativeqa_samples.jsonl")
+    if local_lwm:
+        collected = {}
+        with open(local_lwm, 'r') as f:
+            for line in f:
+                row = json.loads(line)
+                collected[row["idx"]] = {"document": {"text": row["document_text"]}}
+    else:
+        try:
+            stream = load_dataset("deepmind/narrativeqa", split="train", streaming=True)
+        except Exception:
+            stream = load_dataset("narrativeqa", split="train", streaming=True)
+        collected = {}
+        for i, item in enumerate(tqdm(stream, desc="Streaming NarrativeQA", total=max_idx + 1)):
+            if i in idx_set:
+                collected[i] = item
+            if i > max_idx:
+                break
 
     prompts = []
     for idx in sorted(idx_set):
@@ -142,5 +168,3 @@ def _load_narrativeqa(tokenizer, max_length, max_samples):
 
     print(f"[lwm] {len(prompts)} prompts loaded (max_length={max_length})")
     return prompts
-
-
