@@ -55,4 +55,4 @@ jobs:
         run: |
           test -f README.md && wc -l README.md
           test -f EXPECTED_RESULTS.md && wc -l EXPECTED_RESULTS.md
-          test -f Makefile && grep -E '^(check|smoke|train|eval|triforce):' Makefile
+          test -f Makefile && grep -E '^(check|smoke|eval):' Makefile

@@ -1,8 +1,8 @@
 """
-SD + TriForce Sparse KV Cache Experiment.
+Speculative Decoding with sparse drafter KV cache.
 
-Runs standard Speculative Decoding with optional sparse drafter KV cache.
-Measures autoregressive baseline, full-cache SD, and sparse SD.
+Runs standard speculative decoding with an optional sparse KV cache on the
+drafter. Measures autoregressive baseline, full-cache SD, and sparse SD.
 
 Usage:
   python SD.py --dataset gs --budget 512

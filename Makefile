@@ -6,14 +6,13 @@
 #   make smoke             # ~5-min eval smoke test (2 samples)
 #   make eval              # full evaluation: 78 main + 9 ablation + 9 lambda (~5.5 h)
 #   make eval-from-release # eval using pre-downloaded checkpoints (CHECKPOINTS=/path)
-#   make triforce          # TriForce baseline, 7 combos (~1.5 h, separate venv)
 
-.PHONY: check smoke eval eval-from-release triforce clean-results help
+.PHONY: check smoke eval eval-from-release clean-results help
 
 RESULTS_DIR ?= results/full
 
 help:
-	@echo "Targets: check | smoke | eval | eval-from-release | triforce"
+	@echo "Targets: check | smoke | eval | eval-from-release"
 	@echo "See README for details."
 
 check:
@@ -40,9 +39,6 @@ eval:
 eval-from-release:
 	@test -n "$(CHECKPOINTS)" || (echo "usage: make eval-from-release CHECKPOINTS=/path/to/dir"; exit 1)
 	bash scripts/eval_from_release.sh "$(CHECKPOINTS)"
-
-triforce:
-	./run_triforce_compare.sh
 
 clean-results:
 	@echo "WARNING: this removes $(RESULTS_DIR)/ — Ctrl-C in 5s to abort"

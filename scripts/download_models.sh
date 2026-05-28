@@ -3,7 +3,7 @@
 set -euo pipefail
 
 echo "========================================="
-echo " Downloading TriForce model weights"
+echo " Downloading BudgetDraft model weights"
 echo "========================================="
 
 # Target model: Yarn-Llama-2-7b-128k (~14GB)

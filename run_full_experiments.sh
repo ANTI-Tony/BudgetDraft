@@ -14,7 +14,6 @@
 #   3. λ SENSITIVITY : A+C ckpt,    3 datasets × 3 contexts, γ=5 fixed.
 #                      Paired with section 1 at γ=5 for A+0.5C vs A+C.
 #
-# TriForce comparison is NOT in this script (needs transformers==4.37.2).
 # Run from the repo root on a machine with at least one A100-class GPU.
 #
 # Checkpoint paths must be provided via env vars (no defaults — point them at
