@@ -99,31 +99,35 @@ Expect: two CSV files (`/tmp/smoke.csv` aggregate + `/tmp/smoke_samples.csv` per
 
 ### 4.2 Full evaluation from released checkpoints
 
-Place the released checkpoints in a directory with this layout:
+Released checkpoints are on Hugging Face: <https://huggingface.co/qwe123wjb/BudgetDraft-checkpoints>
 
-```
-<your_ckpt_dir>/
-├── main/final/         (A+0.5C — paper's main checkpoint)
-├── aonly/final/        (A-only ablation)
-├── ac/final/           (A+C, lambda=1 ablation)
-└── budget1024/final/   (fixed-budget B=1024 ablation, optional)
+```bash
+# Download all three (~786 MB total) into ./ckpts
+hf download qwe123wjb/BudgetDraft-checkpoints --local-dir ./ckpts
 ```
 
-Each `final/` directory is a standard HuggingFace checkpoint (`config.json` + weights + tokenizer). Total ~1.1 GB.
+Repo layout:
+
+```
+ckpts/
+├── main/    (A+0.5C — paper's main checkpoint)
+├── aonly/   (A-only ablation)
+└── ac/      (A+C, lambda=1 ablation)
+```
+
+Each subfolder is a standard HuggingFace checkpoint (`config.json` + `model.safetensors` + tokenizer files).
 
 **One-command eval:**
 
 ```bash
-make eval-from-release CHECKPOINTS=/path/to/your_ckpt_dir
+make eval-from-release CHECKPOINTS=./ckpts
 # or directly:
-bash scripts/eval_from_release.sh /path/to/your_ckpt_dir
+bash scripts/eval_from_release.sh ./ckpts
 ```
 
-This runs both phases:
-1. `run_full_experiments.sh` — 96 configs (main + A-only + A+C)
-2. inline loop — 9 configs (fixed-budget ablation, only if `budget1024/` is present)
+This runs `run_full_experiments.sh` over 96 configurations (main + A-only + A+C ablations).
 
-Output ends up in `results/full/main/` and `results/full/main_1024only/`. Compare against `EXPECTED_RESULTS.md`.
+Output ends up in `results/full/main/`. Compare against `EXPECTED_RESULTS.md`.
 
 Resume-safe: any config with both `eval_*.csv` and `eval_*_samples.csv` is skipped.
 
