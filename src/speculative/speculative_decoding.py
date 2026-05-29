@@ -130,7 +130,6 @@ def speculative_generate(
 
     # Whether we are using sparse drafter cache
     use_sparse = sparse_budget is not None and sparse_budget < prompt_len
-    drafter_pos_offset = 0
 
     # Use StaticCache for target when prompt is long to avoid OOM
     use_static_target = prompt_len > 4096
@@ -215,15 +214,18 @@ def speculative_generate(
                 )
             drafter_cache = Mq.past_key_values
 
-        # Apply sparse selection to drafter cache
+        # Apply sparse selection to drafter cache. The drafter's past_key_values
+        # is physically replaced with a shorter tensor (budget tokens per layer
+        # per head); subsequent attention runs on the compressed cache. RoPE's
+        # relative-position property preserves correct query-key geometry,
+        # since each kept K vector retains the rotation from its original
+        # position computed during prefill.
         if use_sparse:
             kv_tuples = cache_to_tuples(drafter_cache)
-            sparse_tuples, original_len = apply_triforce_sparse(
+            sparse_tuples, _ = apply_triforce_sparse(
                 kv_tuples, sparse_budget, chunk_size
             )
             drafter_cache = build_dynamic_cache(sparse_tuples)
-            sparse_cache_len = _cache_seq_len(drafter_cache)
-            drafter_pos_offset = original_len - sparse_cache_len
 
     step = 0
     while tot_token_nums < total_len:
